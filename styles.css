@@ -826,3 +826,48 @@
 .buches-grade-analysis summary { cursor: pointer; }
 
 .buches-live-analysis { white-space: pre-wrap; max-height: 14rem; overflow: auto; }
+
+.buches-grade-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 8px; }
+.buches-grade-actions .buches-grade-edited { color: var(--text-success, var(--color-green)); }
+.buches-grade-contest { margin-block: 12px; }
+.buches-grade-contest button { align-self: flex-start; }
+
+.buches-solution-inner.buches-solution-wide { width: 100%; }
+.buches-solution-panel { min-width: 0; }
+.buches-solution-panels.is-split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  padding-block-start: 8px;
+}
+.buches-solution-panels.is-split > .buches-solution-comparison {
+  border-inline-start: 1px solid var(--background-modifier-border);
+  padding-inline-start: 16px;
+}
+.buches-solution-panel-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.buches-solution-panel-toolbar select { max-width: 100%; }
+.buches-solution-waiting[hidden] { display: none; }
+.buches-solution-maximized {
+  position: fixed;
+  inset: 0;
+  z-index: var(--layer-popover);
+  overflow: auto;
+  margin: 0;
+  background: var(--background-primary);
+}
+.theme-dark .buches-solution-maximized { background: var(--background-primary); }
+
+@container (max-width: 550px) {
+  .buches-solution-panels.is-split { grid-template-columns: minmax(0, 1fr); }
+  .buches-solution-panels.is-split > .buches-solution-comparison {
+    border-inline-start: 0;
+    padding-inline-start: 0;
+    border-block-start: 1px solid var(--background-modifier-border);
+    padding-block-start: 10px;
+  }
+}

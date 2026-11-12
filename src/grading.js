@@ -33,6 +33,21 @@ async function solutionFingerprint(body, rubric) {
   return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
+async function preserveLegacyReview(app, note, bookIndex) {
+  const source = await app.vault.read(note);
+  const { metadata, body } = readSolution(source);
+  const saved = metadata.buches_grade;
+  if (!saved?.fingerprint || typeof saved.proof === 'string') return;
+  const rubric = rubricFor(app.metadataCache.getFileCache(bookIndex)?.frontmatter);
+  if (!rubric.length || await solutionFingerprint(body, rubric) !== saved.fingerprint) return;
+  await app.vault.process(note, latest => {
+    if (latest !== source) return latest;
+    const upgraded = { ...saved, proof: body, rubric, renderer: metadata.renderer ?? null };
+    const yaml = stringifyYaml({ ...metadata, buches_grade: upgraded }).trimEnd();
+    return '---\n' + yaml + '\n---\n' + body;
+  });
+}
+
 function validateGrade(reply, rubric, lineCount) {
   let grade = reply;
   if (typeof reply === 'string') {
@@ -81,6 +96,23 @@ function weightedGrade(rubric, scores) {
     / rubric.reduce((sum, row) => sum + row.weight, 0);
 }
 
+function storedReview(saved, current) {
+  if (!saved) return null;
+  const matches = saved.fingerprint === current.fingerprint;
+  const proof = typeof saved.proof === 'string' ? saved.proof : matches ? current.body : null;
+  const rubric = rubricFor({ grading: saved.rubric });
+  const criteria = rubric.length ? rubric : current.rubric;
+  if (!criteria.length) return null;
+  return {
+    proof, rubric: criteria, fingerprint: saved.fingerprint,
+    renderer: saved.renderer ?? current.renderer,
+    changed: proof === null ? !matches : proof !== current.body,
+    stale: !matches,
+    grade: validateGrade(saved, criteria, proof === null ? Infinity : proof.split(/\r?\n/).length),
+    contest: saved.contest,
+  };
+}
+
 class GradeModal extends Modal {
   constructor(reader, state, exercise, note) {
     super(reader.app);
@@ -92,7 +124,14 @@ class GradeModal extends Modal {
     this.component.load();
     this.contentEl.createEl('h2', { text: 'Solution grade' });
     this.contentEl.createEl('p', { cls: 'buches-claudian-scope', text: this.exercise.title });
+    this.controls = this.contentEl.createDiv({ cls: 'buches-grade-controls' });
     this.body = this.contentEl.createDiv();
+    this.vaultEvent = this.app.vault.on('modify', file => {
+      if (file === this.note) void this.refresh();
+    });
+    this.rubricEvent = this.app.metadataCache.on('changed', file => {
+      if (file === this.state.model.book.index) void this.refresh();
+    });
     this.event = this.app.workspace.on('buches:ai-changed', () => void this.refresh());
     this.analysisEvent = this.app.workspace.on('buches:analysis', (note, text) => {
       if (note === this.note && this.liveAnalysis?.isConnected) this.liveAnalysis.setText(text);
@@ -104,6 +143,8 @@ class GradeModal extends Modal {
     this.closed = true;
     if (this.event) this.app.workspace.offref(this.event);
     if (this.analysisEvent) this.app.workspace.offref(this.analysisEvent);
+    if (this.vaultEvent) this.app.vault.offref(this.vaultEvent);
+    if (this.rubricEvent) this.app.metadataCache.offref(this.rubricEvent);
     this.component?.unload();
   }
 
@@ -118,89 +159,160 @@ class GradeModal extends Modal {
       const { metadata, body } = readSolution(await this.app.vault.read(this.note));
       const fingerprint = await solutionFingerprint(body, rubric);
       if (this.closed || revision !== this.revision) return;
-      this.body.empty();
-      if (!rubric.length) {
-        this.body.createEl('p', { text: 'Define grading criteria in the book index frontmatter.' });
-        return;
-      }
-      const ai = this.reader.plugin.aiSolutions;
+      const current = { rubric, body, fingerprint, renderer: metadata.renderer };
       const saved = metadata.buches_grade;
-      if (saved?.fingerprint === fingerprint) {
-        const grade = validateGrade(saved, rubric, body.split(/\r?\n/).length);
-        await this.showGrade(rubric, grade, body, metadata.renderer);
-        return;
-      }
-      if (ai.isPending(this.note, 'grade')) {
-        const task = this.body.createDiv({ cls: 'buches-grade-pending' });
-        task.createEl('p', { text: ai.taskStatus(this.note, 'grade'), attr: { role: 'status' } });
-        task.createEl('progress', { attr: { 'aria-label': 'Grading in progress' } });
-        const details = task.createEl('details', { cls: 'buches-grade-analysis' });
-        details.open = this.analysisOpen ?? false;
-        details.addEventListener('toggle', () => { this.analysisOpen = details.open; });
-        details.createEl('summary', { text: 'Review details' });
-        this.liveAnalysis = details.createEl('p', { cls: 'buches-live-analysis', text:
-          ai.pendingTask(this.note, 'grade').analysis ?? 'The model checks the submitted lines against the book’s rubric and relevant material. Its summary will appear here.',
-        });
-        task.createEl('button', { text: 'Cancel', attr: { type: 'button' } }).addEventListener('click', () => ai.cancel(this.note));
-        return;
-      }
-      const error = ai.errors.get(this.note);
-      if (error) this.body.createEl('p', { cls: 'buches-edit-error', text: error });
-      const available = typeof claudian(this.app)?.api?.runTask === 'function';
-      const message = !body.trim() ? 'Write a solution before grading it.'
-        : !available ? 'Install the Claudian for Bücher fork to grade inside this window.'
-        : saved ? 'The solution or rubric changed. Grade it again?' : 'This solution has not been graded yet. Grade it?';
-      this.body.createEl('p', { text: message });
-      if (body.trim() && available) {
-        const button = this.body.createEl('button', { text: 'Grade solution', cls: 'mod-cta' });
-        button.addEventListener('click', async () => {
-          button.disabled = true;
-          try { await this.grade(rubric, body, fingerprint); }
-          catch (error) { this.body.createEl('p', { cls: 'buches-edit-error', text: error.message }); }
-          finally { button.disabled = false; }
-        });
+      const review = storedReview(saved, current);
+      const resultKey = JSON.stringify(review && [saved, review.proof, review.rubric, review.renderer]);
+      this.showControls(current, review);
+      if (this.resultKey !== resultKey) {
+        this.resultKey = resultKey;
+        this.body.empty();
+        if (review) await this.showGrade(review);
       }
     } catch (error) {
       if (this.closed || revision !== this.revision) return;
-      this.body.empty();
-      this.body.createEl('p', { cls: 'buches-edit-error', text: error.message });
+      this.controls.empty();
+      this.controls.createEl('p', { cls: 'buches-edit-error', text: error.message });
     }
   }
 
-  grade(rubric, body, fingerprint) {
+  showControls(current, review) {
+    const ai = this.reader.plugin.aiSolutions;
+    const task = ai.pendingTask(this.note, 'grade');
+    const error = ai.errors.get(this.note);
+    const available = typeof claudian(this.app)?.api?.runTask === 'function';
+    const key = JSON.stringify([current.fingerprint, review?.grade, review?.contest, task?.phase, error, available, this.contesting]);
+    if (this.controlsKey === key) return;
+    this.controlsKey = key;
+    this.controls.empty();
+    if (review?.stale) {
+      this.controls.createEl('p', {
+        cls: 'buches-claudian-scope',
+        text: review.changed ? 'Showing the grade for the previous version of this solution.' : 'Showing the grade for the previous rubric.',
+      });
+    }
+    if (task) {
+      this.showPending(task);
+      return;
+    }
+    if (error || this.actionError) {
+      this.controls.createEl('p', { cls: 'buches-edit-error', text: this.actionError ?? error });
+    }
+    const message = !available ? 'Install the Claudian for Bücher fork to grade inside this window.'
+      : !current.rubric.length ? 'Define grading criteria in the book index frontmatter.'
+      : !current.body.trim() ? 'Write a solution before grading it.'
+      : !review ? 'This solution has not been graded yet. Grade it?' : '';
+    if (message) this.controls.createEl('p', { text: message });
+    if (!available) return;
+
+    const actions = this.controls.createDiv({ cls: 'buches-grade-actions' });
+    const start = (input, contest) => {
+      try {
+        this.grade(input, contest);
+        this.actionError = null;
+      } catch (error) {
+        this.actionError = error.message;
+        this.controlsKey = null;
+        this.showControls(current, review);
+      }
+    };
+    if (current.rubric.length && current.body.trim()) {
+      actions.createEl('button', {
+        text: review ? 'Evaluate again' : 'Grade solution',
+        cls: !review ? 'mod-cta' : review.changed ? 'buches-grade-edited' : '',
+        attr: { type: 'button' },
+      }).addEventListener('click', () => {
+        this.contesting = false;
+        start({ ...current, proof: current.body });
+      });
+    }
+    if (!review) return;
+    const contestButton = actions.createEl('button', { text: 'Contest grading', attr: {
+      type: 'button', 'aria-expanded': String(Boolean(this.contesting)),
+    } });
+    contestButton.disabled = review.proof === null;
+    if (contestButton.disabled) contestButton.title = 'Evaluate again to record the proof before contesting this legacy grade.';
+    contestButton.addEventListener('click', () => {
+      this.contesting = !this.contesting;
+      this.showControls(current, review);
+      if (this.contesting) this.controls.querySelector('textarea')?.focus();
+      else this.controls.querySelector('[aria-expanded]')?.focus();
+    });
+    if (!this.contesting) return;
+
+    const form = this.controls.createEl('form', { cls: 'buches-grade-contest buches-name-form' });
+    const input = form.createEl('textarea', { attr: {
+      rows: '3', 'aria-label': 'Why should this grade be reconsidered?',
+      placeholder: 'Which score or comment should be reconsidered, and why?',
+    } });
+    input.required = true;
+    input.value = this.contestDraft ?? '';
+    input.addEventListener('input', () => { this.contestDraft = input.value; });
+    form.createEl('button', { text: 'Submit contest', cls: 'mod-cta', attr: { type: 'submit' } });
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      const reason = input.value.trim();
+      if (!reason) return input.focus();
+      start(review, { reason, grade: review.grade });
+    });
+  }
+
+  showPending(task) {
+    const ai = this.reader.plugin.aiSolutions;
+    const status = this.controls.createDiv({ cls: 'buches-grade-pending' });
+    status.createEl('p', { text: ai.taskStatus(this.note, 'grade'), attr: { role: 'status' } });
+    status.createEl('progress', { attr: { 'aria-label': 'Grading in progress' } });
+    const details = status.createEl('details', { cls: 'buches-grade-analysis' });
+    details.open = this.analysisOpen ?? false;
+    details.addEventListener('toggle', () => { this.analysisOpen = details.open; });
+    details.createEl('summary', { text: 'Review details' });
+    this.liveAnalysis = details.createEl('p', { cls: 'buches-live-analysis', text: task.analysis ?? 'The reviewer is checking the proof against the rubric.' });
+    status.createEl('button', { text: 'Cancel', attr: { type: 'button' } }).addEventListener('click', () => ai.cancel(this.note));
+  }
+
+  grade({ rubric, proof, fingerprint, renderer }, contest) {
     const { reader, state, exercise, note } = this;
     reader.plugin.aiSolutions.run(note, 'grade', async (api, options) => {
       const page = await reader.plugin.learning.page(state.file);
       const current = page.nodes.find(node => node.id === exercise.id);
       if (!current) throw new Error('The exercise changed. Reopen it and try again.');
-      const lines = body.split(/\r?\n/);
+      const lines = proof.split(/\r?\n/);
       options.signal.throwIfAborted();
       const { data } = await api.runTask({
         ...options,
         schema: gradeSchema(rubric),
         book: { path: state.model.book.path, chapter: state.file.path, block: current.id, query: exercise.title },
-        instructions: proofReviewer,
+        instructions: proofReviewer + (contest ? '\nReconsider the previous assessment in light of the student’s objection. Grade the same submitted proof. Keep or revise the scores on their merits and explain the decision in the summary.' : ''),
         prompt: [
           'Rubric: ' + JSON.stringify(rubric),
           'Exercise: ' + exercise.title + '\n' + chapterExcerpt(page, current),
           'Submitted proof:\n' + lines.map((line, i) => (i + 1) + ' | ' + line).join('\n'),
-        ].join('\n\n'),
+          contest && 'Previous grade: ' + JSON.stringify(contest.grade) + '\nStudent objection: ' + contest.reason,
+        ].filter(Boolean).join('\n\n'),
       });
       options.signal.throwIfAborted();
       const grade = validateGrade(data, rubric, lines.length);
       await this.app.vault.process(note, text => {
         options.signal.throwIfAborted();
         const latest = readSolution(text);
-        if (latest.body !== body || JSON.stringify(this.rubric()) !== JSON.stringify(rubric)) {
-          throw new Error('The solution or rubric changed while grading. Grade the new version.');
+        const saved = latest.metadata.buches_grade;
+        if (contest && (saved?.fingerprint !== fingerprint
+          || JSON.stringify(validateGrade(saved, rubric, lines.length)) !== JSON.stringify(contest.grade))) {
+          throw new Error('The grade changed while the contest was open. Reopen it and try again.');
         }
-        const yaml = stringifyYaml({ ...latest.metadata, buches_grade: { fingerprint, ...grade } }).trimEnd();
+        const review = { fingerprint, proof, rubric, renderer: renderer ?? null, ...grade };
+        if (contest) review.contest = contest;
+        const yaml = stringifyYaml({ ...latest.metadata, buches_grade: review }).trimEnd();
         return '---\n' + yaml + '\n---\n' + latest.body;
       });
+      if (contest) {
+        this.contestDraft = '';
+        this.contesting = false;
+      }
     });
   }
 
-  async showGrade(rubric, grade, proof, renderer) {
+  async showGrade({ rubric, grade, proof, renderer, contest }) {
     const format = score => new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(score);
     this.body.createEl('p', { cls: 'buches-grade-total', text: `${format(weightedGrade(rubric, grade.scores))} / 10` });
     if (grade.summary) {
@@ -220,6 +332,18 @@ class GradeModal extends Modal {
         attr: { title: criterion.criteria } });
       item.createEl('progress', { attr: { value: String(result.score), max: '10', 'aria-label': criterion.label } });
       item.createEl('p', { text: result.reason });
+    }
+    if (contest?.grade) {
+      const previous = this.body.createEl('details', { cls: 'buches-grade-analysis' });
+      previous.createEl('summary', { text: `Grade before contest · ${format(weightedGrade(rubric, contest.grade.scores))} / 10` });
+      previous.createEl('p', { text: contest.reason });
+      for (const [i, result] of contest.grade.scores.entries()) {
+        previous.createEl('p', { text: `${rubric[i].label} · ${format(result.score)}/10 · ${result.reason}` });
+      }
+    }
+    if (proof === null) {
+      this.body.createEl('p', { cls: 'buches-claudian-scope', text: 'The original text for this older grade is unavailable.' });
+      return;
     }
     const details = this.body.createEl('details', { cls: 'buches-grade-annotations' });
     details.open = true;
@@ -249,4 +373,4 @@ class GradeModal extends Modal {
   }
 }
 
-module.exports = { GradeModal, rubricFor, validateGrade, weightedGrade };
+module.exports = { GradeModal, rubricFor, validateGrade, weightedGrade, storedReview, preserveLegacyReview };

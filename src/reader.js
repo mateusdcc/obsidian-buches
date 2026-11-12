@@ -10,9 +10,21 @@ const { renderMarkdown } = require('./math');
 const { materializeSolution, appendSolutionTab, solutionTabs } = require('./solution-notes');
 const { claudian, studyActions } = require('./claudian');
 const { AiSolutionModal } = require('./ai-solutions');
-const { GradeModal } = require('./grading');
+const { GradeModal, preserveLegacyReview } = require('./grading');
 
 const READER_VIEW = 'buches-reader';
+function updateSolutionButton(button, icon, label) {
+  setIcon(button, icon);
+  button.setAttribute('aria-label', label);
+  button.setAttribute('title', label);
+}
+
+function solutionButton(host, icon, label) {
+  const button = host.createEl('button', { cls: 'buches-block-edit', attr: { type: 'button' } });
+  updateSolutionButton(button, icon, label);
+  return button;
+}
+
 const emptySolution = exercise => ({ exercise, hints: [], markdown: '', source: '', virtual: true });
 
 class BuchReader extends MarkdownView {
@@ -22,6 +34,8 @@ class BuchReader extends MarkdownView {
     this.sheet = false;
     this.embeds = new Set();
     this.selectedSolutions = new Map();
+    this.comparisonSolutions = new Map();
+    this.maximizedSolutions = new Set();
   }
 
   getViewType() { return READER_VIEW; }
@@ -325,7 +339,7 @@ class BuchReader extends MarkdownView {
     const inner = section.createDiv({ cls: 'buches-solution-inner' });
     const tools = inner.createDiv({ cls: 'buches-solution-tools' });
     const hintBar = tools.createDiv({ cls: 'buches-hint-bar' });
-    studyActions(this, tools, state, exercise, { review: true, selectedSolution: () => note });
+    studyActions(this, tools, state, exercise, { review: true, selectedSolution: () => primary.note });
     for (const [index, hint] of hints.entries()) {
       const disclosure = hintBar.createEl('details', { cls: 'buches-hint' });
       const button = disclosure.createEl('summary', { attr: { 'aria-label': `Hint ${index + 1}` } });
@@ -358,14 +372,25 @@ class BuchReader extends MarkdownView {
     const tabKey = details.dataset.stateKey;
     const active = tabs.find(tab => tab.path === this.selectedSolutions.get(tabKey)) ?? tabs[0];
     const tabBar = details.createDiv({ cls: 'buches-solution-tabs', attr: { 'aria-label': 'Solutions' } });
+    const panels = details.createDiv({ cls: 'buches-solution-panels' });
+    const left = panels.createDiv({ cls: 'buches-solution-panel' });
+    const right = panels.createDiv({ cls: 'buches-solution-panel buches-solution-comparison',
+      attr: { role: 'region', 'aria-label': 'Comparison solution' },
+    });
+    const primary = this.mountSolution(left, tools, active, unit, state);
+    let comparison;
+    let split = this.comparisonSolutions.has(tabKey);
+    let maximized = this.maximizedSolutions.has(tabKey);
+
     const changeTab = async path => {
+      if (path === this.comparisonSolutions.get(tabKey)) this.comparisonSolutions.set(tabKey, active.path);
       this.selectedSolutions.set(tabKey, path);
       this.renderKey = null;
       await this.refresh();
     };
     const saveCurrent = async () => {
-      if (pending) await pending;
-      if (embed?.editor && !await this.finishEmbedEdit(embed)) throw new Error('Save the current solution before switching.');
+      await primary.save();
+      await comparison?.save();
     };
     const addTabButton = (title, action, cls = '') => {
       const button = tabBar.createEl('button', { text: title, cls, attr: { type: 'button' } });
@@ -377,14 +402,18 @@ class BuchReader extends MarkdownView {
       });
       return button;
     };
-    for (const tab of tabs) {
+    const addSolutionButton = tab => {
       const button = addTabButton(tab.title, async () => {
         if (tab === active) return;
         await saveCurrent();
         await changeTab(tab.path);
       });
       button.setAttribute('aria-pressed', String(tab === active));
-    }
+      const firstAction = tabBar.querySelector('.buches-solution-tab-add');
+      if (firstAction) tabBar.insertBefore(button, firstAction);
+    };
+    for (const tab of tabs) addSolutionButton(tab);
+
     const createTab = async kind => {
       await saveCurrent();
       return appendSolutionTab(this.plugin, file, model.book, unit, kind, state.solutionMath);
@@ -400,103 +429,256 @@ class BuchReader extends MarkdownView {
         }).open();
       }, 'buches-solution-tab-add');
     }
-    const rendered = details.createDiv({ cls: 'buches-solution-body' });
-    const edit = tools.createEl('button', { cls: 'buches-block-edit',
-      attr: { 'aria-label': 'Edit solution', title: 'Edit solution' } });
-    setIcon(edit, 'pencil');
-    let embed;
-    let note = active.path ? this.app.vault.getAbstractFileByPath(active.path) : null;
-    let pending;
-    if (note && this.plugin.aiSolutions.isPending(note)) {
-      const waiting = details.createDiv({ cls: 'buches-solution-waiting', attr: { role: 'status' } });
-      waiting.createSpan({ text: this.plugin.aiSolutions.taskStatus(note) });
-      waiting.createEl('button', { text: 'Cancel', attr: { type: 'button' } })
-        .addEventListener('click', () => this.plugin.aiSolutions.cancel(note));
-    } else if (note && active.kind === 'ai' && this.plugin.aiSolutions.errors.has(note)) {
-      details.createDiv({ cls: 'buches-edit-error', text: this.plugin.aiSolutions.errors.get(note), attr: { role: 'status' } });
-    }
-    const ensureContent = (native = false) => pending ??= (async () => {
-      this.solutionLoading = (this.solutionLoading ?? 0) + 1;
-      try {
-        if (!active.path) note = await materializeSolution(this.plugin, file, model.book, unit, state.solutionMath);
-        if (!note) throw new Error('The linked solution note could not be found.');
-        if (!rendered.isConnected) return;
-        const source = await this.app.vault.read(note);
-        if (!rendered.isConnected) return;
-        if (!native && (active.kind === 'ai' || /^---\r?\nrenderer: latex\r?\n/.test(source))) {
-          rendered.empty();
-          await this.render(stripFrontmatter(source), rendered, { ...state, file: note }, 'mathjax');
-          return;
-        }
-        const create = this.app.embedRegistry?.getEmbedCreator(note);
-        if (!create) {
-          await this.render(`![[${note.path}]]`, rendered, state);
-          return;
-        }
-        rendered.empty();
-        const host = rendered.createDiv({ cls: 'buches-solution-embed markdown-embed' });
-        embed = create({ app: this.app, containerEl: host, sourcePath: file.path, displayMode: false }, note, '');
-        embed.editable = true;
-        state.component.addChild(embed);
-        this.embeds.add(embed);
-        state.component.register(() => this.embeds.delete(embed));
-        await embed.loadFile();
-      } catch (error) {
-        rendered.empty();
-        rendered.createEl('p', { cls: 'buches-edit-error', text: error.message });
-        pending = null;
-      } finally {
-        this.solutionLoading--;
+
+    const splitButton = solutionButton(tools, 'columns-2', 'Compare solutions');
+    const maximize = solutionButton(tools, 'maximize-2', 'Maximize solutions');
+    const layout = () => {
+      inner.classList.toggle('buches-solution-wide', split || maximized);
+      section.classList.toggle('buches-solution-maximized', maximized);
+      panels.classList.toggle('is-split', split);
+      right.hidden = !split;
+      updateSolutionButton(splitButton, split ? 'panel-right-close' : 'columns-2', split ? 'Close comparison' : 'Compare solutions');
+      updateSolutionButton(maximize, maximized ? 'minimize-2' : 'maximize-2', maximized ? 'Restore solution size' : 'Maximize solutions');
+      splitButton.setAttribute('aria-pressed', String(split));
+      maximize.setAttribute('aria-pressed', String(maximized));
+    };
+    const showComparison = () => {
+      comparison?.unmount();
+      comparison = null;
+      right.empty();
+      if (!split) return;
+      const header = right.createDiv({ cls: 'buches-solution-panel-toolbar' });
+      const select = header.createEl('select', { cls: 'dropdown', attr: { 'aria-label': 'Compare with solution' } });
+      const others = tabs.filter(tab => tab !== active);
+      const chosen = others.find(tab => tab.path === this.comparisonSolutions.get(tabKey)) ?? others[0];
+      for (const tab of others) select.createEl('option', { text: tab.title, attr: { value: tab.path } });
+      const createValue = '+';
+      select.createEl('option', { text: 'New solution…', attr: { value: createValue } });
+      select.value = chosen?.path ?? createValue;
+      if (chosen) {
+        this.comparisonSolutions.set(tabKey, chosen.path);
+        comparison = this.mountSolution(right, header, chosen, unit, state);
+        if (details.open) void comparison.load();
+      } else {
+        right.createEl('p', { cls: 'buches-claudian-scope', text: 'Add another solution to compare.' });
       }
-    })();
-    details.addEventListener('toggle', () => {
-      if (details.open && !unit.virtual) void ensureContent();
-      else if (embed?.editor) void this.finishEmbedEdit(embed).then(updateEditButton);
+      const change = async () => {
+        const value = select.value;
+        select.disabled = true;
+        try {
+          await comparison?.save();
+          if (value === createValue) {
+            const note = await appendSolutionTab(this.plugin, file, model.book, unit, 'manual', state.solutionMath);
+            const tab = { path: note.path, kind: 'manual', title: `Solution ${tabs.length + 1}` };
+            tabs.push(tab);
+            addSolutionButton(tab);
+            this.comparisonSolutions.set(tabKey, tab.path);
+          } else {
+            this.comparisonSolutions.set(tabKey, value);
+          }
+          showComparison();
+          right.querySelector('select')?.focus();
+        } catch (error) {
+          select.value = chosen?.path ?? createValue;
+          this.plugin.report(error, error.message || 'Could not switch comparison.');
+        } finally {
+          select.disabled = false;
+        }
+      };
+      select.addEventListener('change', change);
+      if (!chosen) {
+        select.hidden = true;
+        const add = header.createEl('button', { text: '+ Solution', attr: { type: 'button' } });
+        add.addEventListener('click', async () => {
+          add.disabled = true;
+          try { await change(); }
+          finally { add.disabled = false; }
+        });
+      }
+    };
+
+    splitButton.addEventListener('click', async () => {
+      splitButton.disabled = true;
+      try {
+        if (split) await comparison?.save();
+        split = !split;
+        if (split) {
+          this.comparisonSolutions.set(tabKey, tabs.find(tab => tab !== active)?.path ?? null);
+          details.open = true;
+        } else this.comparisonSolutions.delete(tabKey);
+        layout();
+        showComparison();
+      } catch (error) {
+        this.plugin.report(error, error.message || 'Could not close comparison.');
+      } finally {
+        splitButton.disabled = false;
+      }
     });
-    const grade = tools.createEl('button', { cls: 'buches-block-edit',
-      attr: { 'aria-label': 'Grade this solution', title: 'Grade this solution', type: 'button' } });
-    setIcon(grade, 'chart-no-axes-column');
+    const setMaximized = value => {
+      maximized = value;
+      if (maximized) {
+        this.maximizedSolutions.clear();
+        this.maximizedSolutions.add(tabKey);
+        for (const other of this.pageHost.querySelectorAll('.buches-solution-maximized')) {
+          if (other !== section) other.dispatchEvent(new Event('buches:restore-solution'));
+        }
+        details.open = true;
+      } else this.maximizedSolutions.delete(tabKey);
+      layout();
+    };
+    section.addEventListener('buches:restore-solution', () => setMaximized(false));
+    maximize.addEventListener('click', () => setMaximized(!maximized));
+    section.addEventListener('keydown', event => {
+      if (event.key !== 'Escape' || !maximized || event.defaultPrevented) return;
+      setMaximized(false);
+      maximize.focus();
+    });
+    details.addEventListener('toggle', () => {
+      if (details.open) {
+        if (!unit.virtual) void primary.load();
+        void comparison?.load();
+      } else {
+        void primary.save().catch(error => this.plugin.report(error, error.message));
+        void comparison?.save().catch(error => this.plugin.report(error, error.message));
+        if (maximized) setMaximized(false);
+      }
+    });
+    layout();
+    showComparison();
+  }
+
+  mountSolution(panel, tools, tab, unit, state) {
+    const { exercise } = unit;
+    const { model, file } = state;
+    const component = state.component.addChild(new Component());
+    const waiting = panel.createDiv({ cls: 'buches-solution-waiting', attr: { role: 'status' } });
+    const rendered = panel.createDiv({ cls: 'buches-solution-body' });
+    const edit = solutionButton(tools, 'pencil', 'Edit solution');
+    const grade = solutionButton(tools, 'chart-no-axes-column', 'Grade this solution');
+    let embed;
+    let note = tab.path ? this.app.vault.getAbstractFileByPath(tab.path) : null;
+    let pending;
+    let loaded = false;
+    const ai = this.plugin.aiSolutions;
+    const updateStatus = () => {
+      waiting.empty();
+      const error = note && tab.kind === 'ai' && ai.errors.get(note);
+      waiting.hidden = true;
+      if (note && ai.isPending(note, 'solution')) {
+        waiting.hidden = false;
+        waiting.createSpan({ text: ai.taskStatus(note, 'solution') });
+        waiting.createEl('button', { text: 'Cancel', attr: { type: 'button' } })
+          .addEventListener('click', () => ai.cancel(note));
+      } else if (error) {
+        waiting.hidden = false;
+        waiting.createSpan({ cls: 'buches-edit-error', text: error });
+      }
+    };
+    updateStatus();
+    component.registerEvent(this.app.workspace.on('buches:ai-changed', updateStatus));
+    const getNote = async () => {
+      if (!note && !tab.path) note = await materializeSolution(this.plugin, file, model.book, unit, state.solutionMath);
+      if (!note) throw new Error('The solution note could not be found.');
+      return note;
+    };
+    const ensureContent = (native = false) => {
+      if (pending) return pending;
+      if (loaded && (!native || embed)) return Promise.resolve();
+      this.solutionLoading = (this.solutionLoading ?? 0) + 1;
+      pending = (async () => {
+        try {
+          await getNote();
+          if (!rendered.isConnected) return;
+          const source = await this.app.vault.read(note);
+          if (!rendered.isConnected) return;
+          rendered.empty();
+          if (!native && (tab.kind === 'ai' || /^---\r?\nrenderer: latex\r?\n/.test(source))) {
+            await this.render(stripFrontmatter(source), rendered, { ...state, component, file: note }, 'mathjax');
+          } else {
+            const create = this.app.embedRegistry?.getEmbedCreator(note);
+            if (create) {
+              const host = rendered.createDiv({ cls: 'buches-solution-embed markdown-embed' });
+              embed = create({ app: this.app, containerEl: host, sourcePath: file.path, displayMode: false }, note, '');
+              embed.editable = true;
+              component.addChild(embed);
+              this.embeds.add(embed);
+              component.register(() => this.embeds.delete(embed));
+              await embed.loadFile();
+            } else await this.render(`![[${note.path}]]`, rendered, { ...state, component });
+          }
+          loaded = true;
+        } catch (error) {
+          rendered.empty();
+          rendered.createEl('p', { cls: 'buches-edit-error', text: error.message });
+        } finally {
+          this.solutionLoading--;
+        }
+      })().finally(() => { pending = null; });
+      return pending;
+    };
+    const updateEdit = () => updateSolutionButton(edit, embed?.editor ? 'check' : 'pencil',
+      embed?.editor ? 'Done editing solution' : 'Edit solution');
+    const save = async () => {
+      if (pending) await pending;
+      if (!embed?.editor) return;
+      if (!await this.finishEmbedEdit(embed)) throw new Error('Save the current solution before switching.');
+      updateEdit();
+    };
     grade.addEventListener('click', async () => {
       grade.disabled = true;
       try {
-        await saveCurrent();
-        if (!note) note = await materializeSolution(this.plugin, file, model.book, unit, state.solutionMath);
-        if (!note) throw new Error('The solution note could not be found.');
-        new GradeModal(this, state, exercise, note).open();
+        await save();
+        new GradeModal(this, state, exercise, await getNote()).open();
       } catch (error) {
         this.plugin.report(error, error.message || 'Could not open the grade.');
       } finally {
         grade.disabled = false;
       }
     });
-    const updateEditButton = () => {
-      const editing = Boolean(embed?.editor);
-      const label = editing ? 'Done editing solution' : 'Edit solution';
-      edit.setAttribute('aria-label', label);
-      edit.setAttribute('title', label);
-      setIcon(edit, editing ? 'check' : 'pencil');
-    };
     edit.addEventListener('click', async () => {
-      details.open = true;
-      if (note && this.plugin.aiSolutions.isPending(note)) return;
-      if (pending) await pending;
-      if (!embed) {
-        pending = null;
-        await ensureContent(true);
-      }
-      if (!embed) {
-        if (note) await this.app.workspace.getLeaf('tab').openFile(note, { state: { mode: 'source' } });
-        return;
-      }
-      const editing = Boolean(embed.editor);
-      if (editing) {
-        if (await this.finishEmbedEdit(embed)) {
+      panel.closest('details').open = true;
+      if (note && ai.isPending(note, 'solution')) return;
+      edit.disabled = true;
+      try {
+        if (pending) await pending;
+        if (!embed) await ensureContent(true);
+        if (!embed) {
+          if (note) await this.app.workspace.getLeaf('tab').openFile(note, { state: { mode: 'source' } });
+          return;
+        }
+        if (embed.editor) {
+          await save();
           this.renderKey = null;
           await this.refresh();
+        } else {
+          await preserveLegacyReview(this.app, note, model.book.index);
+          embed.showEditor();
         }
-      } else embed.showEditor();
-      updateEditButton();
+        updateEdit();
+      } catch (error) {
+        this.plugin.report(error, error.message || 'Could not edit the solution.');
+      } finally {
+        edit.disabled = false;
+      }
     });
+    // A rendered AI or LaTeX preview can update while the other panel has an open editor.
+    component.registerEvent(this.app.vault.on('modify', async changed => {
+      if (changed !== note || !loaded || embed) return;
+      if (pending) await pending;
+      if (!rendered.isConnected || embed) return;
+      loaded = false;
+      await ensureContent();
+    }));
+    return {
+      get note() { return note; },
+      save,
+      load: () => ensureContent(),
+      unmount: () => {
+        edit.remove();
+        grade.remove();
+        state.component.removeChild(component);
+      },
+    };
   }
 
   async finishEmbedEdit(embed) {

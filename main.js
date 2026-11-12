@@ -2580,6 +2580,20 @@ var require_grading = __commonJS({
       const digest = await crypto.subtle.digest("SHA-256", bytes);
       return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
     }
+    async function preserveLegacyReview(app, note, bookIndex) {
+      const source = await app.vault.read(note);
+      const { metadata, body } = readSolution(source);
+      const saved = metadata.buches_grade;
+      if (!saved?.fingerprint || typeof saved.proof === "string") return;
+      const rubric = rubricFor(app.metadataCache.getFileCache(bookIndex)?.frontmatter);
+      if (!rubric.length || await solutionFingerprint(body, rubric) !== saved.fingerprint) return;
+      await app.vault.process(note, (latest) => {
+        if (latest !== source) return latest;
+        const upgraded = { ...saved, proof: body, rubric, renderer: metadata.renderer ?? null };
+        const yaml = stringifyYaml({ ...metadata, buches_grade: upgraded }).trimEnd();
+        return "---\n" + yaml + "\n---\n" + body;
+      });
+    }
     function validateGrade(reply, rubric, lineCount) {
       let grade = reply;
       if (typeof reply === "string") {
@@ -2625,6 +2639,24 @@ var require_grading = __commonJS({
     function weightedGrade(rubric, scores) {
       return rubric.reduce((sum, row, i) => sum + row.weight * scores[i].score, 0) / rubric.reduce((sum, row) => sum + row.weight, 0);
     }
+    function storedReview(saved, current) {
+      if (!saved) return null;
+      const matches = saved.fingerprint === current.fingerprint;
+      const proof = typeof saved.proof === "string" ? saved.proof : matches ? current.body : null;
+      const rubric = rubricFor({ grading: saved.rubric });
+      const criteria = rubric.length ? rubric : current.rubric;
+      if (!criteria.length) return null;
+      return {
+        proof,
+        rubric: criteria,
+        fingerprint: saved.fingerprint,
+        renderer: saved.renderer ?? current.renderer,
+        changed: proof === null ? !matches : proof !== current.body,
+        stale: !matches,
+        grade: validateGrade(saved, criteria, proof === null ? Infinity : proof.split(/\r?\n/).length),
+        contest: saved.contest
+      };
+    }
     var GradeModal = class extends Modal {
       constructor(reader, state, exercise, note) {
         super(reader.app);
@@ -2635,7 +2667,14 @@ var require_grading = __commonJS({
         this.component.load();
         this.contentEl.createEl("h2", { text: "Solution grade" });
         this.contentEl.createEl("p", { cls: "buches-claudian-scope", text: this.exercise.title });
+        this.controls = this.contentEl.createDiv({ cls: "buches-grade-controls" });
         this.body = this.contentEl.createDiv();
+        this.vaultEvent = this.app.vault.on("modify", (file) => {
+          if (file === this.note) void this.refresh();
+        });
+        this.rubricEvent = this.app.metadataCache.on("changed", (file) => {
+          if (file === this.state.model.book.index) void this.refresh();
+        });
         this.event = this.app.workspace.on("buches:ai-changed", () => void this.refresh());
         this.analysisEvent = this.app.workspace.on("buches:analysis", (note, text) => {
           if (note === this.note && this.liveAnalysis?.isConnected) this.liveAnalysis.setText(text);
@@ -2646,6 +2685,8 @@ var require_grading = __commonJS({
         this.closed = true;
         if (this.event) this.app.workspace.offref(this.event);
         if (this.analysisEvent) this.app.workspace.offref(this.analysisEvent);
+        if (this.vaultEvent) this.app.vault.offref(this.vaultEvent);
+        if (this.rubricEvent) this.app.metadataCache.offref(this.rubricEvent);
         this.component?.unload();
       }
       rubric() {
@@ -2658,92 +2699,156 @@ var require_grading = __commonJS({
           const { metadata, body } = readSolution(await this.app.vault.read(this.note));
           const fingerprint = await solutionFingerprint(body, rubric);
           if (this.closed || revision !== this.revision) return;
-          this.body.empty();
-          if (!rubric.length) {
-            this.body.createEl("p", { text: "Define grading criteria in the book index frontmatter." });
-            return;
-          }
-          const ai = this.reader.plugin.aiSolutions;
+          const current = { rubric, body, fingerprint, renderer: metadata.renderer };
           const saved = metadata.buches_grade;
-          if (saved?.fingerprint === fingerprint) {
-            const grade = validateGrade(saved, rubric, body.split(/\r?\n/).length);
-            await this.showGrade(rubric, grade, body, metadata.renderer);
-            return;
-          }
-          if (ai.isPending(this.note, "grade")) {
-            const task = this.body.createDiv({ cls: "buches-grade-pending" });
-            task.createEl("p", { text: ai.taskStatus(this.note, "grade"), attr: { role: "status" } });
-            task.createEl("progress", { attr: { "aria-label": "Grading in progress" } });
-            const details = task.createEl("details", { cls: "buches-grade-analysis" });
-            details.open = this.analysisOpen ?? false;
-            details.addEventListener("toggle", () => {
-              this.analysisOpen = details.open;
-            });
-            details.createEl("summary", { text: "Review details" });
-            this.liveAnalysis = details.createEl("p", {
-              cls: "buches-live-analysis",
-              text: ai.pendingTask(this.note, "grade").analysis ?? "The model checks the submitted lines against the book\u2019s rubric and relevant material. Its summary will appear here."
-            });
-            task.createEl("button", { text: "Cancel", attr: { type: "button" } }).addEventListener("click", () => ai.cancel(this.note));
-            return;
-          }
-          const error = ai.errors.get(this.note);
-          if (error) this.body.createEl("p", { cls: "buches-edit-error", text: error });
-          const available = typeof claudian(this.app)?.api?.runTask === "function";
-          const message = !body.trim() ? "Write a solution before grading it." : !available ? "Install the Claudian for B\xFCcher fork to grade inside this window." : saved ? "The solution or rubric changed. Grade it again?" : "This solution has not been graded yet. Grade it?";
-          this.body.createEl("p", { text: message });
-          if (body.trim() && available) {
-            const button = this.body.createEl("button", { text: "Grade solution", cls: "mod-cta" });
-            button.addEventListener("click", async () => {
-              button.disabled = true;
-              try {
-                await this.grade(rubric, body, fingerprint);
-              } catch (error2) {
-                this.body.createEl("p", { cls: "buches-edit-error", text: error2.message });
-              } finally {
-                button.disabled = false;
-              }
-            });
+          const review = storedReview(saved, current);
+          const resultKey = JSON.stringify(review && [saved, review.proof, review.rubric, review.renderer]);
+          this.showControls(current, review);
+          if (this.resultKey !== resultKey) {
+            this.resultKey = resultKey;
+            this.body.empty();
+            if (review) await this.showGrade(review);
           }
         } catch (error) {
           if (this.closed || revision !== this.revision) return;
-          this.body.empty();
-          this.body.createEl("p", { cls: "buches-edit-error", text: error.message });
+          this.controls.empty();
+          this.controls.createEl("p", { cls: "buches-edit-error", text: error.message });
         }
       }
-      grade(rubric, body, fingerprint) {
+      showControls(current, review) {
+        const ai = this.reader.plugin.aiSolutions;
+        const task = ai.pendingTask(this.note, "grade");
+        const error = ai.errors.get(this.note);
+        const available = typeof claudian(this.app)?.api?.runTask === "function";
+        const key = JSON.stringify([current.fingerprint, review?.grade, review?.contest, task?.phase, error, available, this.contesting]);
+        if (this.controlsKey === key) return;
+        this.controlsKey = key;
+        this.controls.empty();
+        if (review?.stale) {
+          this.controls.createEl("p", {
+            cls: "buches-claudian-scope",
+            text: review.changed ? "Showing the grade for the previous version of this solution." : "Showing the grade for the previous rubric."
+          });
+        }
+        if (task) {
+          this.showPending(task);
+          return;
+        }
+        if (error || this.actionError) {
+          this.controls.createEl("p", { cls: "buches-edit-error", text: this.actionError ?? error });
+        }
+        const message = !available ? "Install the Claudian for B\xFCcher fork to grade inside this window." : !current.rubric.length ? "Define grading criteria in the book index frontmatter." : !current.body.trim() ? "Write a solution before grading it." : !review ? "This solution has not been graded yet. Grade it?" : "";
+        if (message) this.controls.createEl("p", { text: message });
+        if (!available) return;
+        const actions = this.controls.createDiv({ cls: "buches-grade-actions" });
+        const start = (input2, contest) => {
+          try {
+            this.grade(input2, contest);
+            this.actionError = null;
+          } catch (error2) {
+            this.actionError = error2.message;
+            this.controlsKey = null;
+            this.showControls(current, review);
+          }
+        };
+        if (current.rubric.length && current.body.trim()) {
+          actions.createEl("button", {
+            text: review ? "Evaluate again" : "Grade solution",
+            cls: !review ? "mod-cta" : review.changed ? "buches-grade-edited" : "",
+            attr: { type: "button" }
+          }).addEventListener("click", () => {
+            this.contesting = false;
+            start({ ...current, proof: current.body });
+          });
+        }
+        if (!review) return;
+        const contestButton = actions.createEl("button", { text: "Contest grading", attr: {
+          type: "button",
+          "aria-expanded": String(Boolean(this.contesting))
+        } });
+        contestButton.disabled = review.proof === null;
+        if (contestButton.disabled) contestButton.title = "Evaluate again to record the proof before contesting this legacy grade.";
+        contestButton.addEventListener("click", () => {
+          this.contesting = !this.contesting;
+          this.showControls(current, review);
+          if (this.contesting) this.controls.querySelector("textarea")?.focus();
+          else this.controls.querySelector("[aria-expanded]")?.focus();
+        });
+        if (!this.contesting) return;
+        const form = this.controls.createEl("form", { cls: "buches-grade-contest buches-name-form" });
+        const input = form.createEl("textarea", { attr: {
+          rows: "3",
+          "aria-label": "Why should this grade be reconsidered?",
+          placeholder: "Which score or comment should be reconsidered, and why?"
+        } });
+        input.required = true;
+        input.value = this.contestDraft ?? "";
+        input.addEventListener("input", () => {
+          this.contestDraft = input.value;
+        });
+        form.createEl("button", { text: "Submit contest", cls: "mod-cta", attr: { type: "submit" } });
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          const reason = input.value.trim();
+          if (!reason) return input.focus();
+          start(review, { reason, grade: review.grade });
+        });
+      }
+      showPending(task) {
+        const ai = this.reader.plugin.aiSolutions;
+        const status = this.controls.createDiv({ cls: "buches-grade-pending" });
+        status.createEl("p", { text: ai.taskStatus(this.note, "grade"), attr: { role: "status" } });
+        status.createEl("progress", { attr: { "aria-label": "Grading in progress" } });
+        const details = status.createEl("details", { cls: "buches-grade-analysis" });
+        details.open = this.analysisOpen ?? false;
+        details.addEventListener("toggle", () => {
+          this.analysisOpen = details.open;
+        });
+        details.createEl("summary", { text: "Review details" });
+        this.liveAnalysis = details.createEl("p", { cls: "buches-live-analysis", text: task.analysis ?? "The reviewer is checking the proof against the rubric." });
+        status.createEl("button", { text: "Cancel", attr: { type: "button" } }).addEventListener("click", () => ai.cancel(this.note));
+      }
+      grade({ rubric, proof, fingerprint, renderer }, contest) {
         const { reader, state, exercise, note } = this;
         reader.plugin.aiSolutions.run(note, "grade", async (api, options) => {
           const page = await reader.plugin.learning.page(state.file);
           const current = page.nodes.find((node) => node.id === exercise.id);
           if (!current) throw new Error("The exercise changed. Reopen it and try again.");
-          const lines = body.split(/\r?\n/);
+          const lines = proof.split(/\r?\n/);
           options.signal.throwIfAborted();
           const { data } = await api.runTask({
             ...options,
             schema: gradeSchema(rubric),
             book: { path: state.model.book.path, chapter: state.file.path, block: current.id, query: exercise.title },
-            instructions: proofReviewer,
+            instructions: proofReviewer + (contest ? "\nReconsider the previous assessment in light of the student\u2019s objection. Grade the same submitted proof. Keep or revise the scores on their merits and explain the decision in the summary." : ""),
             prompt: [
               "Rubric: " + JSON.stringify(rubric),
               "Exercise: " + exercise.title + "\n" + chapterExcerpt(page, current),
-              "Submitted proof:\n" + lines.map((line, i) => i + 1 + " | " + line).join("\n")
-            ].join("\n\n")
+              "Submitted proof:\n" + lines.map((line, i) => i + 1 + " | " + line).join("\n"),
+              contest && "Previous grade: " + JSON.stringify(contest.grade) + "\nStudent objection: " + contest.reason
+            ].filter(Boolean).join("\n\n")
           });
           options.signal.throwIfAborted();
           const grade = validateGrade(data, rubric, lines.length);
           await this.app.vault.process(note, (text) => {
             options.signal.throwIfAborted();
             const latest = readSolution(text);
-            if (latest.body !== body || JSON.stringify(this.rubric()) !== JSON.stringify(rubric)) {
-              throw new Error("The solution or rubric changed while grading. Grade the new version.");
+            const saved = latest.metadata.buches_grade;
+            if (contest && (saved?.fingerprint !== fingerprint || JSON.stringify(validateGrade(saved, rubric, lines.length)) !== JSON.stringify(contest.grade))) {
+              throw new Error("The grade changed while the contest was open. Reopen it and try again.");
             }
-            const yaml = stringifyYaml({ ...latest.metadata, buches_grade: { fingerprint, ...grade } }).trimEnd();
+            const review = { fingerprint, proof, rubric, renderer: renderer ?? null, ...grade };
+            if (contest) review.contest = contest;
+            const yaml = stringifyYaml({ ...latest.metadata, buches_grade: review }).trimEnd();
             return "---\n" + yaml + "\n---\n" + latest.body;
           });
+          if (contest) {
+            this.contestDraft = "";
+            this.contesting = false;
+          }
         });
       }
-      async showGrade(rubric, grade, proof, renderer) {
+      async showGrade({ rubric, grade, proof, renderer, contest }) {
         const format = (score) => new Intl.NumberFormat(void 0, { maximumFractionDigits: 1 }).format(score);
         this.body.createEl("p", { cls: "buches-grade-total", text: `${format(weightedGrade(rubric, grade.scores))} / 10` });
         if (grade.summary) {
@@ -2769,6 +2874,18 @@ var require_grading = __commonJS({
           });
           item.createEl("progress", { attr: { value: String(result.score), max: "10", "aria-label": criterion.label } });
           item.createEl("p", { text: result.reason });
+        }
+        if (contest?.grade) {
+          const previous = this.body.createEl("details", { cls: "buches-grade-analysis" });
+          previous.createEl("summary", { text: `Grade before contest \xB7 ${format(weightedGrade(rubric, contest.grade.scores))} / 10` });
+          previous.createEl("p", { text: contest.reason });
+          for (const [i, result] of contest.grade.scores.entries()) {
+            previous.createEl("p", { text: `${rubric[i].label} \xB7 ${format(result.score)}/10 \xB7 ${result.reason}` });
+          }
+        }
+        if (proof === null) {
+          this.body.createEl("p", { cls: "buches-claudian-scope", text: "The original text for this older grade is unavailable." });
+          return;
         }
         const details = this.body.createEl("details", { cls: "buches-grade-annotations" });
         details.open = true;
@@ -2800,7 +2917,7 @@ var require_grading = __commonJS({
         }
       }
     };
-    module2.exports = { GradeModal, rubricFor, validateGrade, weightedGrade };
+    module2.exports = { GradeModal, rubricFor, validateGrade, weightedGrade, storedReview, preserveLegacyReview };
   }
 });
 
@@ -2819,8 +2936,18 @@ var require_reader = __commonJS({
     var { materializeSolution, appendSolutionTab, solutionTabs } = require_solution_notes();
     var { claudian, studyActions } = require_claudian();
     var { AiSolutionModal } = require_ai_solutions();
-    var { GradeModal } = require_grading();
+    var { GradeModal, preserveLegacyReview } = require_grading();
     var READER_VIEW2 = "buches-reader";
+    function updateSolutionButton(button, icon, label) {
+      setIcon(button, icon);
+      button.setAttribute("aria-label", label);
+      button.setAttribute("title", label);
+    }
+    function solutionButton(host, icon, label) {
+      const button = host.createEl("button", { cls: "buches-block-edit", attr: { type: "button" } });
+      updateSolutionButton(button, icon, label);
+      return button;
+    }
     var emptySolution = (exercise) => ({ exercise, hints: [], markdown: "", source: "", virtual: true });
     var BuchReader2 = class extends MarkdownView {
       constructor(leaf, plugin) {
@@ -2829,6 +2956,8 @@ var require_reader = __commonJS({
         this.sheet = false;
         this.embeds = /* @__PURE__ */ new Set();
         this.selectedSolutions = /* @__PURE__ */ new Map();
+        this.comparisonSolutions = /* @__PURE__ */ new Map();
+        this.maximizedSolutions = /* @__PURE__ */ new Set();
       }
       getViewType() {
         return READER_VIEW2;
@@ -3152,17 +3281,17 @@ var require_reader = __commonJS({
         const inner = section.createDiv({ cls: "buches-solution-inner" });
         const tools = inner.createDiv({ cls: "buches-solution-tools" });
         const hintBar = tools.createDiv({ cls: "buches-hint-bar" });
-        studyActions(this, tools, state, exercise, { review: true, selectedSolution: () => note });
+        studyActions(this, tools, state, exercise, { review: true, selectedSolution: () => primary.note });
         for (const [index, hint] of hints.entries()) {
           const disclosure = hintBar.createEl("details", { cls: "buches-hint" });
           const button = disclosure.createEl("summary", { attr: { "aria-label": `Hint ${index + 1}` } });
           setIcon(button.createSpan({ attr: { "aria-hidden": "true" } }), "lightbulb");
           button.createSpan({ text: `#${index + 1}` });
           const popover = disclosure.createDiv({ cls: "buches-hint-popover buches-source-block" });
-          const rendered2 = popover.createDiv();
+          const rendered = popover.createDiv();
           const markdown = calloutBody(hint.markdown);
-          if (hint.title && hint.title.toLowerCase() !== "hint") rendered2.createEl("strong", { text: hint.title });
-          await this.render(markdown, rendered2.createDiv(), state);
+          if (hint.title && hint.title.toLowerCase() !== "hint") rendered.createEl("strong", { text: hint.title });
+          await this.render(markdown, rendered.createDiv(), state);
           disclosure.addEventListener("toggle", () => {
             if (disclosure.open) {
               for (const other of hintBar.children) if (other !== disclosure) other.open = false;
@@ -3191,14 +3320,25 @@ var require_reader = __commonJS({
         const tabKey = details.dataset.stateKey;
         const active = tabs.find((tab) => tab.path === this.selectedSolutions.get(tabKey)) ?? tabs[0];
         const tabBar = details.createDiv({ cls: "buches-solution-tabs", attr: { "aria-label": "Solutions" } });
+        const panels = details.createDiv({ cls: "buches-solution-panels" });
+        const left = panels.createDiv({ cls: "buches-solution-panel" });
+        const right = panels.createDiv({
+          cls: "buches-solution-panel buches-solution-comparison",
+          attr: { role: "region", "aria-label": "Comparison solution" }
+        });
+        const primary = this.mountSolution(left, tools, active, unit, state);
+        let comparison;
+        let split = this.comparisonSolutions.has(tabKey);
+        let maximized = this.maximizedSolutions.has(tabKey);
         const changeTab = async (path) => {
+          if (path === this.comparisonSolutions.get(tabKey)) this.comparisonSolutions.set(tabKey, active.path);
           this.selectedSolutions.set(tabKey, path);
           this.renderKey = null;
           await this.refresh();
         };
         const saveCurrent = async () => {
-          if (pending) await pending;
-          if (embed?.editor && !await this.finishEmbedEdit(embed)) throw new Error("Save the current solution before switching.");
+          await primary.save();
+          await comparison?.save();
         };
         const addTabButton = (title, action, cls = "") => {
           const button = tabBar.createEl("button", { text: title, cls, attr: { type: "button" } });
@@ -3214,14 +3354,17 @@ var require_reader = __commonJS({
           });
           return button;
         };
-        for (const tab of tabs) {
+        const addSolutionButton = (tab) => {
           const button = addTabButton(tab.title, async () => {
             if (tab === active) return;
             await saveCurrent();
             await changeTab(tab.path);
           });
           button.setAttribute("aria-pressed", String(tab === active));
-        }
+          const firstAction = tabBar.querySelector(".buches-solution-tab-add");
+          if (firstAction) tabBar.insertBefore(button, firstAction);
+        };
+        for (const tab of tabs) addSolutionButton(tab);
         const createTab = async (kind) => {
           await saveCurrent();
           return appendSolutionTab(this.plugin, file, model.book, unit, kind, state.solutionMath);
@@ -3240,106 +3383,261 @@ var require_reader = __commonJS({
             }).open();
           }, "buches-solution-tab-add");
         }
-        const rendered = details.createDiv({ cls: "buches-solution-body" });
-        const edit = tools.createEl("button", {
-          cls: "buches-block-edit",
-          attr: { "aria-label": "Edit solution", title: "Edit solution" }
-        });
-        setIcon(edit, "pencil");
-        let embed;
-        let note = active.path ? this.app.vault.getAbstractFileByPath(active.path) : null;
-        let pending;
-        if (note && this.plugin.aiSolutions.isPending(note)) {
-          const waiting = details.createDiv({ cls: "buches-solution-waiting", attr: { role: "status" } });
-          waiting.createSpan({ text: this.plugin.aiSolutions.taskStatus(note) });
-          waiting.createEl("button", { text: "Cancel", attr: { type: "button" } }).addEventListener("click", () => this.plugin.aiSolutions.cancel(note));
-        } else if (note && active.kind === "ai" && this.plugin.aiSolutions.errors.has(note)) {
-          details.createDiv({ cls: "buches-edit-error", text: this.plugin.aiSolutions.errors.get(note), attr: { role: "status" } });
-        }
-        const ensureContent = (native = false) => pending ?? (pending = (async () => {
-          this.solutionLoading = (this.solutionLoading ?? 0) + 1;
-          try {
-            if (!active.path) note = await materializeSolution(this.plugin, file, model.book, unit, state.solutionMath);
-            if (!note) throw new Error("The linked solution note could not be found.");
-            if (!rendered.isConnected) return;
-            const source = await this.app.vault.read(note);
-            if (!rendered.isConnected) return;
-            if (!native && (active.kind === "ai" || /^---\r?\nrenderer: latex\r?\n/.test(source))) {
-              rendered.empty();
-              await this.render(stripFrontmatter(source), rendered, { ...state, file: note }, "mathjax");
-              return;
-            }
-            const create = this.app.embedRegistry?.getEmbedCreator(note);
-            if (!create) {
-              await this.render(`![[${note.path}]]`, rendered, state);
-              return;
-            }
-            rendered.empty();
-            const host = rendered.createDiv({ cls: "buches-solution-embed markdown-embed" });
-            embed = create({ app: this.app, containerEl: host, sourcePath: file.path, displayMode: false }, note, "");
-            embed.editable = true;
-            state.component.addChild(embed);
-            this.embeds.add(embed);
-            state.component.register(() => this.embeds.delete(embed));
-            await embed.loadFile();
-          } catch (error) {
-            rendered.empty();
-            rendered.createEl("p", { cls: "buches-edit-error", text: error.message });
-            pending = null;
-          } finally {
-            this.solutionLoading--;
+        const splitButton = solutionButton(tools, "columns-2", "Compare solutions");
+        const maximize = solutionButton(tools, "maximize-2", "Maximize solutions");
+        const layout = () => {
+          inner.classList.toggle("buches-solution-wide", split || maximized);
+          section.classList.toggle("buches-solution-maximized", maximized);
+          panels.classList.toggle("is-split", split);
+          right.hidden = !split;
+          updateSolutionButton(splitButton, split ? "panel-right-close" : "columns-2", split ? "Close comparison" : "Compare solutions");
+          updateSolutionButton(maximize, maximized ? "minimize-2" : "maximize-2", maximized ? "Restore solution size" : "Maximize solutions");
+          splitButton.setAttribute("aria-pressed", String(split));
+          maximize.setAttribute("aria-pressed", String(maximized));
+        };
+        const showComparison = () => {
+          comparison?.unmount();
+          comparison = null;
+          right.empty();
+          if (!split) return;
+          const header = right.createDiv({ cls: "buches-solution-panel-toolbar" });
+          const select = header.createEl("select", { cls: "dropdown", attr: { "aria-label": "Compare with solution" } });
+          const others = tabs.filter((tab) => tab !== active);
+          const chosen = others.find((tab) => tab.path === this.comparisonSolutions.get(tabKey)) ?? others[0];
+          for (const tab of others) select.createEl("option", { text: tab.title, attr: { value: tab.path } });
+          const createValue = "+";
+          select.createEl("option", { text: "New solution\u2026", attr: { value: createValue } });
+          select.value = chosen?.path ?? createValue;
+          if (chosen) {
+            this.comparisonSolutions.set(tabKey, chosen.path);
+            comparison = this.mountSolution(right, header, chosen, unit, state);
+            if (details.open) void comparison.load();
+          } else {
+            right.createEl("p", { cls: "buches-claudian-scope", text: "Add another solution to compare." });
           }
-        })());
+          const change = async () => {
+            const value = select.value;
+            select.disabled = true;
+            try {
+              await comparison?.save();
+              if (value === createValue) {
+                const note = await appendSolutionTab(this.plugin, file, model.book, unit, "manual", state.solutionMath);
+                const tab = { path: note.path, kind: "manual", title: `Solution ${tabs.length + 1}` };
+                tabs.push(tab);
+                addSolutionButton(tab);
+                this.comparisonSolutions.set(tabKey, tab.path);
+              } else {
+                this.comparisonSolutions.set(tabKey, value);
+              }
+              showComparison();
+              right.querySelector("select")?.focus();
+            } catch (error) {
+              select.value = chosen?.path ?? createValue;
+              this.plugin.report(error, error.message || "Could not switch comparison.");
+            } finally {
+              select.disabled = false;
+            }
+          };
+          select.addEventListener("change", change);
+          if (!chosen) {
+            select.hidden = true;
+            const add = header.createEl("button", { text: "+ Solution", attr: { type: "button" } });
+            add.addEventListener("click", async () => {
+              add.disabled = true;
+              try {
+                await change();
+              } finally {
+                add.disabled = false;
+              }
+            });
+          }
+        };
+        splitButton.addEventListener("click", async () => {
+          splitButton.disabled = true;
+          try {
+            if (split) await comparison?.save();
+            split = !split;
+            if (split) {
+              this.comparisonSolutions.set(tabKey, tabs.find((tab) => tab !== active)?.path ?? null);
+              details.open = true;
+            } else this.comparisonSolutions.delete(tabKey);
+            layout();
+            showComparison();
+          } catch (error) {
+            this.plugin.report(error, error.message || "Could not close comparison.");
+          } finally {
+            splitButton.disabled = false;
+          }
+        });
+        const setMaximized = (value) => {
+          maximized = value;
+          if (maximized) {
+            this.maximizedSolutions.clear();
+            this.maximizedSolutions.add(tabKey);
+            for (const other of this.pageHost.querySelectorAll(".buches-solution-maximized")) {
+              if (other !== section) other.dispatchEvent(new Event("buches:restore-solution"));
+            }
+            details.open = true;
+          } else this.maximizedSolutions.delete(tabKey);
+          layout();
+        };
+        section.addEventListener("buches:restore-solution", () => setMaximized(false));
+        maximize.addEventListener("click", () => setMaximized(!maximized));
+        section.addEventListener("keydown", (event) => {
+          if (event.key !== "Escape" || !maximized || event.defaultPrevented) return;
+          setMaximized(false);
+          maximize.focus();
+        });
         details.addEventListener("toggle", () => {
-          if (details.open && !unit.virtual) void ensureContent();
-          else if (embed?.editor) void this.finishEmbedEdit(embed).then(updateEditButton);
+          if (details.open) {
+            if (!unit.virtual) void primary.load();
+            void comparison?.load();
+          } else {
+            void primary.save().catch((error) => this.plugin.report(error, error.message));
+            void comparison?.save().catch((error) => this.plugin.report(error, error.message));
+            if (maximized) setMaximized(false);
+          }
         });
-        const grade = tools.createEl("button", {
-          cls: "buches-block-edit",
-          attr: { "aria-label": "Grade this solution", title: "Grade this solution", type: "button" }
-        });
-        setIcon(grade, "chart-no-axes-column");
+        layout();
+        showComparison();
+      }
+      mountSolution(panel, tools, tab, unit, state) {
+        const { exercise } = unit;
+        const { model, file } = state;
+        const component = state.component.addChild(new Component());
+        const waiting = panel.createDiv({ cls: "buches-solution-waiting", attr: { role: "status" } });
+        const rendered = panel.createDiv({ cls: "buches-solution-body" });
+        const edit = solutionButton(tools, "pencil", "Edit solution");
+        const grade = solutionButton(tools, "chart-no-axes-column", "Grade this solution");
+        let embed;
+        let note = tab.path ? this.app.vault.getAbstractFileByPath(tab.path) : null;
+        let pending;
+        let loaded = false;
+        const ai = this.plugin.aiSolutions;
+        const updateStatus = () => {
+          waiting.empty();
+          const error = note && tab.kind === "ai" && ai.errors.get(note);
+          waiting.hidden = true;
+          if (note && ai.isPending(note, "solution")) {
+            waiting.hidden = false;
+            waiting.createSpan({ text: ai.taskStatus(note, "solution") });
+            waiting.createEl("button", { text: "Cancel", attr: { type: "button" } }).addEventListener("click", () => ai.cancel(note));
+          } else if (error) {
+            waiting.hidden = false;
+            waiting.createSpan({ cls: "buches-edit-error", text: error });
+          }
+        };
+        updateStatus();
+        component.registerEvent(this.app.workspace.on("buches:ai-changed", updateStatus));
+        const getNote = async () => {
+          if (!note && !tab.path) note = await materializeSolution(this.plugin, file, model.book, unit, state.solutionMath);
+          if (!note) throw new Error("The solution note could not be found.");
+          return note;
+        };
+        const ensureContent = (native = false) => {
+          if (pending) return pending;
+          if (loaded && (!native || embed)) return Promise.resolve();
+          this.solutionLoading = (this.solutionLoading ?? 0) + 1;
+          pending = (async () => {
+            try {
+              await getNote();
+              if (!rendered.isConnected) return;
+              const source = await this.app.vault.read(note);
+              if (!rendered.isConnected) return;
+              rendered.empty();
+              if (!native && (tab.kind === "ai" || /^---\r?\nrenderer: latex\r?\n/.test(source))) {
+                await this.render(stripFrontmatter(source), rendered, { ...state, component, file: note }, "mathjax");
+              } else {
+                const create = this.app.embedRegistry?.getEmbedCreator(note);
+                if (create) {
+                  const host = rendered.createDiv({ cls: "buches-solution-embed markdown-embed" });
+                  embed = create({ app: this.app, containerEl: host, sourcePath: file.path, displayMode: false }, note, "");
+                  embed.editable = true;
+                  component.addChild(embed);
+                  this.embeds.add(embed);
+                  component.register(() => this.embeds.delete(embed));
+                  await embed.loadFile();
+                } else await this.render(`![[${note.path}]]`, rendered, { ...state, component });
+              }
+              loaded = true;
+            } catch (error) {
+              rendered.empty();
+              rendered.createEl("p", { cls: "buches-edit-error", text: error.message });
+            } finally {
+              this.solutionLoading--;
+            }
+          })().finally(() => {
+            pending = null;
+          });
+          return pending;
+        };
+        const updateEdit = () => updateSolutionButton(
+          edit,
+          embed?.editor ? "check" : "pencil",
+          embed?.editor ? "Done editing solution" : "Edit solution"
+        );
+        const save = async () => {
+          if (pending) await pending;
+          if (!embed?.editor) return;
+          if (!await this.finishEmbedEdit(embed)) throw new Error("Save the current solution before switching.");
+          updateEdit();
+        };
         grade.addEventListener("click", async () => {
           grade.disabled = true;
           try {
-            await saveCurrent();
-            if (!note) note = await materializeSolution(this.plugin, file, model.book, unit, state.solutionMath);
-            if (!note) throw new Error("The solution note could not be found.");
-            new GradeModal(this, state, exercise, note).open();
+            await save();
+            new GradeModal(this, state, exercise, await getNote()).open();
           } catch (error) {
             this.plugin.report(error, error.message || "Could not open the grade.");
           } finally {
             grade.disabled = false;
           }
         });
-        const updateEditButton = () => {
-          const editing = Boolean(embed?.editor);
-          const label = editing ? "Done editing solution" : "Edit solution";
-          edit.setAttribute("aria-label", label);
-          edit.setAttribute("title", label);
-          setIcon(edit, editing ? "check" : "pencil");
-        };
         edit.addEventListener("click", async () => {
-          details.open = true;
-          if (note && this.plugin.aiSolutions.isPending(note)) return;
-          if (pending) await pending;
-          if (!embed) {
-            pending = null;
-            await ensureContent(true);
-          }
-          if (!embed) {
-            if (note) await this.app.workspace.getLeaf("tab").openFile(note, { state: { mode: "source" } });
-            return;
-          }
-          const editing = Boolean(embed.editor);
-          if (editing) {
-            if (await this.finishEmbedEdit(embed)) {
+          panel.closest("details").open = true;
+          if (note && ai.isPending(note, "solution")) return;
+          edit.disabled = true;
+          try {
+            if (pending) await pending;
+            if (!embed) await ensureContent(true);
+            if (!embed) {
+              if (note) await this.app.workspace.getLeaf("tab").openFile(note, { state: { mode: "source" } });
+              return;
+            }
+            if (embed.editor) {
+              await save();
               this.renderKey = null;
               await this.refresh();
+            } else {
+              await preserveLegacyReview(this.app, note, model.book.index);
+              embed.showEditor();
             }
-          } else embed.showEditor();
-          updateEditButton();
+            updateEdit();
+          } catch (error) {
+            this.plugin.report(error, error.message || "Could not edit the solution.");
+          } finally {
+            edit.disabled = false;
+          }
         });
+        component.registerEvent(this.app.vault.on("modify", async (changed) => {
+          if (changed !== note || !loaded || embed) return;
+          if (pending) await pending;
+          if (!rendered.isConnected || embed) return;
+          loaded = false;
+          await ensureContent();
+        }));
+        return {
+          get note() {
+            return note;
+          },
+          save,
+          load: () => ensureContent(),
+          unmount: () => {
+            edit.remove();
+            grade.remove();
+            state.component.removeChild(component);
+          }
+        };
       }
       async finishEmbedEdit(embed) {
         try {
