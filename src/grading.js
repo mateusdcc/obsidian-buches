@@ -325,20 +325,26 @@ class GradeModal extends Modal {
       });
       if (this.closed || !details.isConnected) return;
     }
+    const feedbackState = { file: this.note, component: this.component, readerMath: 'mathjax' };
     for (const [i, criterion] of rubric.entries()) {
       const result = grade.scores[i];
       const item = this.body.createDiv({ cls: 'buches-grade-item' });
-      item.createEl('strong', { text: `${criterion.label} · ${format(result.score)}/10 · weight ${criterion.weight}`,
-        attr: { title: criterion.criteria } });
+      const details = item.createEl('details', { cls: 'buches-grade-criterion' });
+      const heading = details.createEl('summary');
+      await this.reader.render(`**${criterion.label}** · ${format(result.score)}/10 · weight ${criterion.weight}`,
+        heading.createSpan({ cls: 'buches-grade-heading markdown-rendered' }), feedbackState);
+      await this.reader.render(criterion.criteria, details.createDiv({ cls: 'markdown-rendered' }), feedbackState);
       item.createEl('progress', { attr: { value: String(result.score), max: '10', 'aria-label': criterion.label } });
-      item.createEl('p', { text: result.reason });
+      await this.reader.render(result.reason, item.createDiv({ cls: 'buches-grade-reason markdown-rendered' }), feedbackState);
+      if (this.closed || !item.isConnected) return;
     }
     if (contest?.grade) {
       const previous = this.body.createEl('details', { cls: 'buches-grade-analysis' });
       previous.createEl('summary', { text: `Grade before contest · ${format(weightedGrade(rubric, contest.grade.scores))} / 10` });
-      previous.createEl('p', { text: contest.reason });
+      await this.reader.render(contest.reason, previous.createDiv({ cls: 'markdown-rendered' }), feedbackState);
       for (const [i, result] of contest.grade.scores.entries()) {
-        previous.createEl('p', { text: `${rubric[i].label} · ${format(result.score)}/10 · ${result.reason}` });
+        await this.reader.render(`${rubric[i].label} · ${format(result.score)}/10 · ${result.reason}`,
+          previous.createDiv({ cls: 'markdown-rendered' }), feedbackState);
       }
     }
     if (proof === null) {

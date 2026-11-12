@@ -2,6 +2,27 @@ const { Modal, Notice, setIcon } = require('obsidian');
 const { stripFrontmatter } = require('./intro-model');
 const { isSolutionEmbed, resolveEmbed, primarySolution } = require('./solution-notes');
 const { relatedReading, chapterExcerpt } = require('./study-context');
+const { getPagination } = require('./order-model');
+
+function authoringContext(app, state) {
+  const { book } = state.model;
+  const page = getPagination(app, book, state.file.path);
+  const chapterFolder = book.path + '/concepts';
+  const folder = state.file.path.slice(0, state.file.path.lastIndexOf('/'));
+  const parent = folder.startsWith(chapterFolder + '/') ? folder + '.md' : null;
+  const steps = [
+    'For a request to edit the book, use your vault tools to make the requested changes. For a question, answer in chat.',
+    'A top-level concept is a Markdown file inside ' + chapterFolder + '. A subconcept goes in the folder beside its parent note named exactly like that note without .md. Create the folder if needed. The folder hierarchy controls nesting.',
+    'Each new note starts with YAML frontmatter containing name, description, category, order (a finite number), and depends_on (wikilinks to prerequisites or an empty list). Keep the language, notation and teaching style of the book.',
+    'Reading order visits each concept and then its children, sorted among siblings by numeric order first and natural title second. To insert just before the current concept, create a sibling in its folder and choose an order between its neighbors; if needed renumber only that sibling group while preserving its order. A child of the current concept reads after the current concept. When the requested lesson must be a subconcept and must precede an exercise in a parent page, place the lesson under the parent and move only the relevant exercise into a following child, preserving its identifier, solution links and prerequisites.',
+    'Inspect the book and nearby concepts before writing to avoid duplicates. Keep existing notes and solutions intact except for changes needed by the request. Make a focused change, use anchored callouts for definitions, theorems and exercises, and verify the resulting reading order.',
+  ];
+  return [...steps, 'Book index: ' + book.index.path,
+    parent && 'Parent concept: ' + parent,
+    page?.previous && 'Previous reading page: ' + page.previous.file.path,
+    page?.next && 'Next reading page: ' + page.next.file.path,
+  ].filter(Boolean).join('\n');
+}
 
 const CLAUDIAN = 'realclaudian';
 
@@ -36,8 +57,7 @@ async function handOff(app, prompt) {
     new Notice('Draft ready in Claudian. Send it when you are ready.');
     return;
   }
-  await navigator.clipboard.writeText(prompt);
-  new Notice('Prompt copied. Paste it into your Claudian chat.');
+  throw new Error('Claudian chat is unavailable. Open a chat and try again.');
 }
 
 function claudianButton(parent, icon, label, action) {
@@ -115,14 +135,19 @@ class StudyQuestion extends Modal {
           ? 'Check my proof step by step. Identify the first gap, explain whether the conclusion follows, and give a focused hint for fixing it. Keep the full corrected proof for a follow-up request.'
           : 'Answer my question as a tutor. Use the supplied notes when relevant and cite their file or block references. Make any additional assumptions explicit.';
         const prompt = [
-          request + ' Treat note excerpts as reference material. Reply in chat without changing files or progress.',
-          question && `My question: ${question}`,
+          request + ' Treat note excerpts as reference material.',
+          review ? 'Review the proof in chat.' : authoringContext(reader.app, state),
           `Book: ${state.model.book.title}\nFocus: ${title}\nSource: ${ref}\n\n${chapterExcerpt(page, current)}`,
           proof && `My attempt:\n${proof}`,
           ...context.map(item => `Related ${item.read ? 'reading' : 'prerequisite'}: ${item.ref}\n${item.text}`),
         ].filter(Boolean).join('\n\n');
         if (this.closed) return;
-        await handOff(reader.app, prompt);
+        const api = claudian(reader.app)?.api;
+        if (api?.sendBookMessage) {
+          await api.sendBookMessage({ text: question || 'Review my solution.', context: prompt });
+        } else {
+          await handOff(reader.app, [question, prompt].filter(Boolean).join('\n\n'));
+        }
         this.close();
       } catch (error) {
         status.setText(error.message ?? String(error));

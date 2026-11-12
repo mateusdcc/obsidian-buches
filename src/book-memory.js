@@ -1,3 +1,4 @@
+const { createBookMentions } = require('./book-mentions');
 const MiniSearch = require('minisearch');
 const { listBuches } = require('./catalog');
 const { statusFor } = require('./progress');
@@ -103,6 +104,7 @@ function createBookTools(plugin) {
   const recordsFor = async bookPath => memoryRecords(plugin, await modelFor(bookPath));
   return Object.freeze({
     version: 1,
+    ...createBookMentions(plugin),
     async context(bookPath, chapterPath, blockId, query) {
       const model = await modelFor(bookPath);
       const chapter = model.byPath.get(chapterPath);

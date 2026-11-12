@@ -810,7 +810,10 @@
 
 .buches-grade-item { margin-block: 0 14px; }
 .buches-grade-item progress { display: block; width: 100%; margin-block: 4px; }
-.buches-grade-item p { margin: 4px 0; color: var(--text-muted); }
+.buches-grade-item p { margin: 4px 0; }
+.buches-grade-reason { color: var(--text-muted); }
+.buches-grade-criterion > summary { cursor: pointer; }
+.buches-grade-heading > p { display: inline; }
 .buches-grade-annotations { margin-block-start: 16px; }
 .buches-graded-source { margin-block-start: 8px; }
 .buches-grade-comment small { color: var(--text-muted); }

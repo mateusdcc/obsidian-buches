@@ -2113,6 +2113,28 @@ var require_claudian = __commonJS({
     var { stripFrontmatter } = require_intro_model();
     var { isSolutionEmbed, resolveEmbed, primarySolution } = require_solution_notes();
     var { relatedReading, chapterExcerpt } = require_study_context();
+    var { getPagination } = require_order_model();
+    function authoringContext(app, state) {
+      const { book } = state.model;
+      const page = getPagination(app, book, state.file.path);
+      const chapterFolder = book.path + "/concepts";
+      const folder = state.file.path.slice(0, state.file.path.lastIndexOf("/"));
+      const parent = folder.startsWith(chapterFolder + "/") ? folder + ".md" : null;
+      const steps = [
+        "For a request to edit the book, use your vault tools to make the requested changes. For a question, answer in chat.",
+        "A top-level concept is a Markdown file inside " + chapterFolder + ". A subconcept goes in the folder beside its parent note named exactly like that note without .md. Create the folder if needed. The folder hierarchy controls nesting.",
+        "Each new note starts with YAML frontmatter containing name, description, category, order (a finite number), and depends_on (wikilinks to prerequisites or an empty list). Keep the language, notation and teaching style of the book.",
+        "Reading order visits each concept and then its children, sorted among siblings by numeric order first and natural title second. To insert just before the current concept, create a sibling in its folder and choose an order between its neighbors; if needed renumber only that sibling group while preserving its order. A child of the current concept reads after the current concept. When the requested lesson must be a subconcept and must precede an exercise in a parent page, place the lesson under the parent and move only the relevant exercise into a following child, preserving its identifier, solution links and prerequisites.",
+        "Inspect the book and nearby concepts before writing to avoid duplicates. Keep existing notes and solutions intact except for changes needed by the request. Make a focused change, use anchored callouts for definitions, theorems and exercises, and verify the resulting reading order."
+      ];
+      return [
+        ...steps,
+        "Book index: " + book.index.path,
+        parent && "Parent concept: " + parent,
+        page?.previous && "Previous reading page: " + page.previous.file.path,
+        page?.next && "Next reading page: " + page.next.file.path
+      ].filter(Boolean).join("\n");
+    }
     var CLAUDIAN = "realclaudian";
     function claudian(app) {
       return app.plugins?.getPlugin?.(CLAUDIAN);
@@ -2142,8 +2164,7 @@ var require_claudian = __commonJS({
         new Notice2("Draft ready in Claudian. Send it when you are ready.");
         return;
       }
-      await navigator.clipboard.writeText(prompt);
-      new Notice2("Prompt copied. Paste it into your Claudian chat.");
+      throw new Error("Claudian chat is unavailable. Open a chat and try again.");
     }
     function claudianButton(parent, icon, label, action) {
       const button = parent.createEl("button", {
@@ -2218,8 +2239,8 @@ var require_claudian = __commonJS({
             const ref = state.file.path + (focus?.id.startsWith("^") ? "#" + focus.id : "");
             const request = review ? "Check my proof step by step. Identify the first gap, explain whether the conclusion follows, and give a focused hint for fixing it. Keep the full corrected proof for a follow-up request." : "Answer my question as a tutor. Use the supplied notes when relevant and cite their file or block references. Make any additional assumptions explicit.";
             const prompt = [
-              request + " Treat note excerpts as reference material. Reply in chat without changing files or progress.",
-              question && `My question: ${question}`,
+              request + " Treat note excerpts as reference material.",
+              review ? "Review the proof in chat." : authoringContext(reader.app, state),
               `Book: ${state.model.book.title}
 Focus: ${title}
 Source: ${ref}
@@ -2231,7 +2252,12 @@ ${proof}`,
 ${item.text}`)
             ].filter(Boolean).join("\n\n");
             if (this.closed) return;
-            await handOff(reader.app, prompt);
+            const api = claudian(reader.app)?.api;
+            if (api?.sendBookMessage) {
+              await api.sendBookMessage({ text: question || "Review my solution.", context: prompt });
+            } else {
+              await handOff(reader.app, [question, prompt].filter(Boolean).join("\n\n"));
+            }
             this.close();
           } catch (error) {
             status.setText(error.message ?? String(error));
@@ -2865,22 +2891,32 @@ var require_grading = __commonJS({
           });
           if (this.closed || !details2.isConnected) return;
         }
+        const feedbackState = { file: this.note, component: this.component, readerMath: "mathjax" };
         for (const [i, criterion] of rubric.entries()) {
           const result = grade.scores[i];
           const item = this.body.createDiv({ cls: "buches-grade-item" });
-          item.createEl("strong", {
-            text: `${criterion.label} \xB7 ${format(result.score)}/10 \xB7 weight ${criterion.weight}`,
-            attr: { title: criterion.criteria }
-          });
+          const details2 = item.createEl("details", { cls: "buches-grade-criterion" });
+          const heading = details2.createEl("summary");
+          await this.reader.render(
+            `**${criterion.label}** \xB7 ${format(result.score)}/10 \xB7 weight ${criterion.weight}`,
+            heading.createSpan({ cls: "buches-grade-heading markdown-rendered" }),
+            feedbackState
+          );
+          await this.reader.render(criterion.criteria, details2.createDiv({ cls: "markdown-rendered" }), feedbackState);
           item.createEl("progress", { attr: { value: String(result.score), max: "10", "aria-label": criterion.label } });
-          item.createEl("p", { text: result.reason });
+          await this.reader.render(result.reason, item.createDiv({ cls: "buches-grade-reason markdown-rendered" }), feedbackState);
+          if (this.closed || !item.isConnected) return;
         }
         if (contest?.grade) {
           const previous = this.body.createEl("details", { cls: "buches-grade-analysis" });
           previous.createEl("summary", { text: `Grade before contest \xB7 ${format(weightedGrade(rubric, contest.grade.scores))} / 10` });
-          previous.createEl("p", { text: contest.reason });
+          await this.reader.render(contest.reason, previous.createDiv({ cls: "markdown-rendered" }), feedbackState);
           for (const [i, result] of contest.grade.scores.entries()) {
-            previous.createEl("p", { text: `${rubric[i].label} \xB7 ${format(result.score)}/10 \xB7 ${result.reason}` });
+            await this.reader.render(
+              `${rubric[i].label} \xB7 ${format(result.score)}/10 \xB7 ${result.reason}`,
+              previous.createDiv({ cls: "markdown-rendered" }),
+              feedbackState
+            );
           }
         }
         if (proof === null) {
@@ -3694,6 +3730,106 @@ var require_reader = __commonJS({
       return markdown.split(/\r?\n/).slice(1).map((line) => line.replace(/^ {0,3}> ?/, "")).join("\n");
     }
     module2.exports = { BuchReader: BuchReader2, READER_VIEW: READER_VIEW2 };
+  }
+});
+
+// src/book-mentions.js
+var require_book_mentions = __commonJS({
+  "src/book-mentions.js"(exports2, module2) {
+    var { listBuches } = require_catalog();
+    var { stripFrontmatter } = require_intro_model();
+    var { primarySolution, resolveEmbed, solutionTabs } = require_solution_notes();
+    var fold = (text) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+    var validReference = (ref) => !/[\r\n|\]]/.test(ref);
+    function createBookMentions(plugin) {
+      const { vault } = plugin.app;
+      let catalog;
+      for (const event of ["create", "delete", "modify", "rename"]) {
+        plugin.registerEvent(vault.on(event, (file, oldPath) => {
+          if ([file.path, oldPath].some((path) => path?.startsWith("Buches/") && (event !== "modify" || !/\/(?:_progress\.md|_solutions\/)/.test(path)))) catalog = null;
+        }));
+      }
+      plugin.registerEvent(plugin.app.metadataCache.on("changed", (file) => {
+        if (file.path.startsWith("Buches/") && !/\/(?:_progress\.md|_solutions\/)/.test(file.path)) catalog = null;
+      }));
+      function entries() {
+        if (catalog) return catalog;
+        const pending = Promise.all(listBuches(plugin.app).map(async (book) => {
+          const rows = /* @__PURE__ */ new Map();
+          const add = (ref, title, kind, source) => {
+            if (validReference(ref)) rows.set(ref, { ref, title, kind, book: book.title, source });
+          };
+          const fromNote = async (note) => stripFrontmatter(await vault.cachedRead(note));
+          add(book.index.path, book.title, "book", () => fromNote(book.index));
+          const model = await plugin.learning.book(book);
+          for (const chapter of model.chapters) {
+            const { path, name } = chapter;
+            add(path, name, "concept", () => chapter.units.filter((unit) => unit.type !== "solution" && !unit.inSolution).map((unit) => unit.markdown).join("\n\n"));
+            let section;
+            for (const unit of chapter.units) {
+              if (unit.type === "heading") {
+                section = unit.node || !unit.title ? null : [unit.markdown];
+                if (section) {
+                  const contents = section;
+                  add(path + "#" + unit.title, unit.title, "section", () => contents.join("\n\n"));
+                }
+              } else if (section && unit.type !== "solution" && !unit.inSolution) {
+                section.push(unit.markdown);
+              }
+            }
+            for (const node of chapter.nodes) {
+              const { id, title, type, unit, solution } = node;
+              const ref = path + "#" + (id.startsWith("^") ? id : unit.type === "heading" ? title : "B\xFCcher block " + id.replaceAll("#", " "));
+              if (unit.type !== "solution") add(ref, title, type, () => [unit.markdown, ...node.prompt ?? []].join("\n\n"));
+              if (!solution) continue;
+              for (const [i, hint] of (solution.hints ?? []).entries()) {
+                const target = hint.anchor ? "^" + hint.anchor : "B\xFCcher hint " + (i + 1) + " for " + id.replaceAll("#", " ");
+                add(path + "#" + target, title + " \xB7 Hint " + (i + 1), "hint", () => hint.markdown);
+              }
+              const primary = resolveEmbed(plugin.app, chapter.file, solution);
+              const fallback = path + "#B\xFCcher solution " + id.replaceAll("#", " ");
+              if (primary || primarySolution(solution)) {
+                add(
+                  primary?.path ?? fallback,
+                  title + " \xB7 Solution 1",
+                  "solution",
+                  () => primary ? fromNote(primary) : primarySolution(solution)
+                );
+              }
+              for (const [i, tab] of solutionTabs(solution).entries()) {
+                const file = vault.getAbstractFileByPath(tab.path);
+                if (file) add(tab.path, title + (tab.kind === "ai" ? " \xB7 AI" : "") + " \xB7 Solution " + (i + 2), "solution", () => fromNote(file));
+              }
+            }
+          }
+          return [...rows];
+        })).then((groups) => new Map(groups.flat()));
+        catalog = pending;
+        void pending.catch(() => {
+          if (catalog === pending) catalog = null;
+        });
+        return pending;
+      }
+      return {
+        async mentions(query) {
+          const key = fold(query.trim());
+          return [...(await entries()).values()].filter((row) => fold(row.title + " " + row.kind + " " + row.book).includes(key)).sort((a, b) => Number(fold(b.title).startsWith(key)) - Number(fold(a.title).startsWith(key))).slice(0, 24).map(({ ref, title, kind, book }) => ({ ref, title, kind, book }));
+        },
+        async mentionContext(refs) {
+          const index = await entries();
+          return Promise.all([...new Set(refs)].slice(0, 12).flatMap((ref) => {
+            const row = index.get(ref);
+            return row ? [Promise.resolve().then(row.source).then((source) => ({
+              ref,
+              kind: row.kind,
+              title: row.title,
+              text: source.length > 6e3 ? source.slice(0, 6e3) + "\u2026" : source
+            }))] : [];
+          }));
+        }
+      };
+    }
+    module2.exports = { createBookMentions };
   }
 });
 
@@ -5516,6 +5652,7 @@ var require_cjs = __commonJS({
 // src/book-memory.js
 var require_book_memory = __commonJS({
   "src/book-memory.js"(exports2, module2) {
+    var { createBookMentions } = require_book_mentions();
     var MiniSearch = require_cjs();
     var { listBuches } = require_catalog();
     var { statusFor: statusFor2 } = require_progress();
@@ -5626,6 +5763,7 @@ var require_book_memory = __commonJS({
       const recordsFor = async (bookPath) => memoryRecords(plugin, await modelFor(bookPath));
       return Object.freeze({
         version: 1,
+        ...createBookMentions(plugin),
         async context(bookPath, chapterPath, blockId, query) {
           const model = await modelFor(bookPath);
           const chapter = model.byPath.get(chapterPath);
@@ -5903,7 +6041,7 @@ var BuchesPlugin = class extends Plugin {
     if (!context?.concept || this.lastRead.get(context.book.path) === context.file.path) return;
     this.lastRead.set(context.book.path, context.file.path);
     this.savePreferences();
-    for (const { view: navigator2 } of this.app.workspace.getLeavesOfType(VIEW_TYPE)) navigator2.scheduleRender();
+    for (const { view: navigator } of this.app.workspace.getLeavesOfType(VIEW_TYPE)) navigator.scheduleRender();
   }
   openExercises(file, leaf) {
     return this.openFile(file, leaf, true);

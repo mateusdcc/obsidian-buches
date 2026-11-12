@@ -8,7 +8,7 @@ Turn a folder of Markdown notes into a book with ordered chapters, an exercise s
 
 ## Install
 
-1. Download `buches-0.4.2.zip` from the [GitHub release](https://github.com/mateusdcc/obsidian-buches/releases/latest).
+1. Download `buches-0.4.3.zip` from the [GitHub release](https://github.com/mateusdcc/obsidian-buches/releases/latest).
 2. Extract its `buches` folder into `<vault>/.obsidian/plugins/`. The folder should contain `main.js`, `manifest.json`, and `styles.css`.
 3. In Obsidian, enable **Bücher** under **Settings → Community plugins**. Click the library ribbon icon or run **Open Buches**.
 4. To try the sample, extract `demo-book.zip` into your vault, or copy the repository’s [demo/Buches](demo/Buches/) folder to the vault root. Keep your existing `Buches` folder if you already have one; copy only the sample book into it.
@@ -44,7 +44,7 @@ With Claudian for Bücher, each request runs in the background and the reply is 
 
 ## Grading solutions
 
-The bar-chart button opens the grade for the selected solution. Click **Grade solution** to start a separate request with [Claudian for Bücher](https://github.com/mateusdcc/claudian/releases/latest). The window shows progress and lets you cancel. Expand **Review details** for the model’s summary, with live updates when the provider offers them. The result shows each criterion, its score from 0 to 10, the reason, and comments next to the lines being discussed. Bücher calculates the weighted total. The grade and comments stay attached to the submitted version. **Evaluate again** starts a fresh review and turns green if the solution text changed. **Contest grading** lets you explain an objection while keeping the current grade on screen. The reconsidered grade includes the original scores for reference.
+The bar-chart button opens the grade for the selected solution. Click **Grade solution** to start a separate request with [Claudian for Bücher](https://github.com/mateusdcc/claudian/releases/latest). The window shows progress and lets you cancel. Expand **Review details** for the model’s summary, with live updates when the provider offers them. The result shows each criterion, its score from 0 to 10, the reason, and comments next to the lines being discussed. Expand a criterion to see the rubric text. Math renders in both the rubric and the feedback. Bücher calculates the weighted total. The grade and comments stay attached to the submitted version. **Evaluate again** starts a fresh review and turns green if the solution text changed. **Contest grading** lets you explain an objection while keeping the current grade on screen. The reconsidered grade includes the original scores for reference.
 
 Configure criteria in the book’s `_index.md`:
 
@@ -60,13 +60,13 @@ Add as many criteria as needed, with unique IDs and positive weights. The grade 
 
 ## Study with Claudian
 
-Enable [Claudian](https://github.com/yishentu/claudian) in the same vault. Hover or focus a definition, theorem, example, or exercise to find the question button. The chapter toolbar also has a question button for the whole note.
+Enable [Claudian for Bücher](https://github.com/mateusdcc/claudian/releases/latest) in the same vault for direct chat and book mentions. Hover or focus a definition, theorem, example, or exercise to find the question button. The chapter toolbar also has a question button for the whole note.
 
-- **Ask Claudian.** The prompt includes the note path, block reference and excerpt. With related reading enabled, Bücher looks up declared prerequisites and up to five relevant excerpts, including chapters marked as read across books. It ranks excerpts by shared words and keeps exercise solutions out of this lookup. Clear the checkbox to send just the selected context.
+- **Ask Claudian.** Sends your message directly to the chat, including the first message in a new chat. Expand **Bücher context** under the message to see the note path, block, excerpt, and book layout provided to the agent. Ask for an explanation or request an edit such as inserting a subconcept before the current exercise. With related reading enabled, Bücher looks up declared prerequisites and up to five relevant excerpts, including chapters marked as read across books. It ranks excerpts by shared words and keeps exercise solutions out of this lookup. Clear the checkbox to send just the selected context.
 - **Patch.** The wand opens Claudian Inline edit with the chapter body or the selected callout body. Enter your instruction and inspect the diff before applying it. Block patches keep the callout header and block ID outside the editable range.
 - **Review a proof.** The checklist button sends the exercise and the saved solution, including solutions stored in embedded notes. You can paste a different attempt in the dialog. The prompt asks Claudian to explain any gap and give a hint for correcting it.
 
-With an active Claudian session, **Send to Claudian** queues the prompt. For a new chat, the integration prepares a draft for you to send. The chat follows your Claudian provider settings. Tested with Claudian 2.3.38. [Claudian plugin API](https://github.com/yishentu/claudian/blob/main/docs/plugin-api.md)
+Type **@** in the Claudian composer to mention a book, concept, section, definition, theorem, exercise, hint, or solution. Selecting an object inserts a link and attaches its excerpt to the message. Mention a solution explicitly when you want to include it.
 
 ### Background tutoring and book memory
 
