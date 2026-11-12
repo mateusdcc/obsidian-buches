@@ -8,7 +8,7 @@ Turn a folder of Markdown notes into a book with ordered chapters, an exercise s
 
 ## Install
 
-1. Download `buches-0.2.0.zip` from the [GitHub release](https://github.com/mateusdcc/obsidian-buches/releases/latest).
+1. Download `buches-0.3.0.zip` from the [GitHub release](https://github.com/mateusdcc/obsidian-buches/releases/latest).
 2. Extract its `buches` folder into `<vault>/.obsidian/plugins/`. The folder should contain `main.js`, `manifest.json`, and `styles.css`.
 3. In Obsidian, enable **Bücher** under **Settings → Community plugins**. Click the library ribbon icon or run **Open Buches**.
 4. To try the sample, extract `demo-book.zip` into your vault, or copy the repository’s [demo/Buches](demo/Buches/) folder to the vault root. Keep your existing `Buches` folder if you already have one; copy only the sample book into it.
@@ -35,6 +35,18 @@ Hover or focus a book or concept in the navigator, then select the clipboard ico
 On first reveal, an existing worked proof moves into a regular Markdown note in the book’s `_solutions/` folder and the chapter gains an Obsidian `![[…]]` embed. The pencil opens the native embed editor, and the check closes it. The embedded note saves using Obsidian’s editor. Numbered lamps show hints when requested.
 
 Under **Settings → Buches**, choose **Reader math** and the default **Solution math** for newly created solution notes. An explicit `buches-math` comment chooses the engine when its proof is moved. The generated note stores that choice as a `renderer` property.
+
+## Study with Claudian
+
+Enable [Claudian](https://github.com/yishentu/claudian) in the same vault. Hover or focus a definition, theorem, example, or exercise to find the question button. The chapter toolbar also has a question button for the whole note.
+
+- **Ask Claudian.** The prompt includes the note path, block reference and excerpt. With related reading enabled, Bücher looks up declared prerequisites and up to five relevant excerpts, including chapters marked as read across books. It ranks excerpts by shared words and keeps exercise solutions out of this lookup. Clear the checkbox to send just the selected context.
+- **Patch.** The wand opens Claudian Inline edit with the chapter body or the selected callout body. Enter your instruction and inspect the diff before applying it. Block patches keep the callout header and block ID outside the editable range.
+- **Review a proof.** The checklist button sends the exercise and the saved solution, including solutions stored in embedded notes. You can paste a different attempt in the dialog. The prompt asks Claudian to explain any gap and give a hint for correcting it.
+
+With an active Claudian session, **Send to Claudian** queues the prompt. For a new chat, the integration prepares a draft for you to send. The chat follows your Claudian provider settings. Tested with Claudian 2.3.38. [Claudian plugin API](https://github.com/yishentu/claudian/blob/main/docs/plugin-api.md)
+
+[![Ask Claudian about a theorem](docs/media/claudian.png)](docs/media/claudian.png)
 
 ## Chapter template for authors and AI
 

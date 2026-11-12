@@ -1651,7 +1651,269 @@ ${unit.markdown}`;
         if (plugin.solutionWrites.get(key) === operation) plugin.solutionWrites.delete(key);
       }
     }
-    module2.exports = { isSolutionEmbed, materializeSolution };
+    module2.exports = { isSolutionEmbed, resolveEmbed, materializeSolution };
+  }
+});
+
+// src/study-context.js
+var require_study_context = __commonJS({
+  "src/study-context.js"(exports2, module2) {
+    var { listBuches } = require_catalog();
+    var { flattenConcepts } = require_buch_model();
+    var { statusFor: statusFor2 } = require_progress();
+    var stopwords = new Set("como qual quais quando sobre para pode esse essa isso este esta isto nota livro definicao the that with what when from this does about".split(" "));
+    function terms(text) {
+      return new Set(text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().match(/[\p{L}\p{N}]{4,}/gu)?.filter((word) => !stopwords.has(word)) ?? []);
+    }
+    function overlap(query, text) {
+      const words = terms(text);
+      return [...query].filter((word) => words.has(word)).length;
+    }
+    var excerpt = (text, length) => text.length <= length ? text : text.slice(0, length) + "\u2026";
+    async function relatedReading(plugin, model, file, focus, question) {
+      const query = terms([question, focus?.title, model.byPath.get(file.path)?.name].filter(Boolean).join(" "));
+      const target = focus && model.targets.get(`${file.path}#${focus.id}`);
+      const direct = [...target?.dependencies ?? [], ...model.byPath.get(file.path)?.dependencies ?? []].filter(Boolean);
+      const prerequisites = new Set(direct.map((dep) => dep.key));
+      const books = listBuches(plugin.app);
+      const matches = [];
+      for (const book of books) {
+        const chapters = flattenConcepts(book.concepts);
+        const progress = await plugin.progress.read(book.path === model.book.path ? model : { book, chapters: [] }).catch(() => ({}));
+        for (const { file: note, name } of chapters) {
+          const path = note.path;
+          const sameChapter = path === file.path;
+          const read = statusFor2({ book }, progress, { path });
+          if (!read && !direct.some((dep) => dep.path === path)) continue;
+          const page = await plugin.learning.page(note).catch(() => null);
+          if (!page) continue;
+          const candidates = page.nodes.filter((node) => node.type !== "exercise");
+          if (!candidates.length) {
+            const prose = page.units.filter((unit) => unit.type !== "solution" && !unit.inSolution).map((unit) => unit.markdown).join("\n\n");
+            candidates.push({ title: name, unit: { markdown: prose } });
+          }
+          for (const node of candidates) {
+            const ref = path + (node.id?.startsWith("^") ? "#" + node.id : "");
+            const explicit = prerequisites.has(ref) || prerequisites.has(path);
+            if (sameChapter && (!focus || node.id === focus.id || !explicit)) continue;
+            if (!explicit && !read) continue;
+            const score = 4 * overlap(query, node.title) + overlap(query, node.unit.markdown) + overlap(query, name);
+            if (!explicit && !score) continue;
+            matches.push({ ref, path, title: node.title, read, explicit, score, text: excerpt(node.unit.markdown, 650) });
+          }
+        }
+      }
+      matches.sort((a, b) => Number(b.explicit) - Number(a.explicit) || b.score - a.score);
+      const seen = /* @__PURE__ */ new Set();
+      return matches.filter((match) => {
+        if (seen.has(match.path)) return false;
+        seen.add(match.path);
+        return true;
+      }).slice(0, 5);
+    }
+    function chapterExcerpt(page, focus) {
+      if (focus?.unit.type !== "solution" && focus?.unit.markdown) {
+        return [focus.unit.markdown, ...focus.prompt ?? []].join("\n\n");
+      }
+      return excerpt(page.units.filter((unit) => unit.type !== "solution" && !unit.inSolution).map((unit) => unit.markdown).join("\n\n"), 4800);
+    }
+    module2.exports = { relatedReading, chapterExcerpt };
+  }
+});
+
+// src/claudian.js
+var require_claudian = __commonJS({
+  "src/claudian.js"(exports2, module2) {
+    var { Modal, Notice: Notice2, setIcon } = require("obsidian");
+    var { stripFrontmatter } = require_intro_model();
+    var { isSolutionEmbed, resolveEmbed } = require_solution_notes();
+    var { relatedReading, chapterExcerpt } = require_study_context();
+    var CLAUDIAN = "realclaudian";
+    function claudian(app) {
+      return app.plugins?.getPlugin?.(CLAUDIAN);
+    }
+    function inlineEdit(app) {
+      return app.commands?.commands?.[`${CLAUDIAN}:inline-edit`]?.editorCallback;
+    }
+    async function openChat(app, plugin) {
+      if (typeof plugin.views?.activateView === "function") return plugin.views.activateView();
+      const leaf = app.workspace.getLeavesOfType("claudian-view")[0];
+      if (leaf) await app.workspace.revealLeaf(leaf);
+      else app.commands?.executeCommandById?.(`${CLAUDIAN}:open-view`);
+    }
+    async function handOff(app, prompt) {
+      const plugin = claudian(app);
+      if (!plugin) throw new Error("Enable Claudian to continue.");
+      await openChat(app, plugin);
+      const api = claudian(app)?.api;
+      const session = api?.version === 1 && api.getActiveSessionId?.();
+      if (session) {
+        const status = await api.send(session, { text: prompt, mode: "queue" });
+        new Notice2(status === "queued" ? "Question queued in Claudian." : "Sent to Claudian.");
+        return;
+      }
+      const chat = plugin.views?.getView?.() ?? app.workspace.getLeavesOfType("claudian-view")[0]?.view;
+      if (chat?.appendToActiveInput?.(prompt)) {
+        new Notice2("Draft ready in Claudian. Send it when you are ready.");
+        return;
+      }
+      await navigator.clipboard.writeText(prompt);
+      new Notice2("Prompt copied. Paste it into your Claudian chat.");
+    }
+    function claudianButton(parent, icon, label, action) {
+      const button = parent.createEl("button", {
+        cls: "buches-claudian-button",
+        attr: { "aria-label": label, title: label, type: "button" }
+      });
+      setIcon(button, icon);
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          await action();
+        } catch (error) {
+          new Notice2(error.message ?? String(error));
+        } finally {
+          button.disabled = false;
+        }
+      });
+      return button;
+    }
+    async function readAttempt(reader, file, exercise) {
+      await reader.flushEmbeds();
+      const plugin = reader.plugin;
+      const page = await plugin.learning.page(file, await reader.app.vault.read(file));
+      const solution = page.nodes.find((node) => node.id === exercise.id)?.solution;
+      if (!solution) return "";
+      if (!isSolutionEmbed(solution)) return solution.markdown.trim();
+      const note = resolveEmbed(reader.app, file, solution);
+      return note ? stripFrontmatter(await reader.app.vault.read(note)) : "";
+    }
+    var StudyQuestion = class extends Modal {
+      constructor(reader, state, focus, review) {
+        super(reader.app);
+        Object.assign(this, { reader, state, focus, review });
+      }
+      onOpen() {
+        const { contentEl, reader, state, focus, review } = this;
+        const chapter = state.model.byPath.get(state.file.path);
+        const title = focus?.title ?? chapter?.name ?? state.model.book.title;
+        contentEl.createEl("h2", { text: review ? "Review my solution" : "Ask Claudian" });
+        contentEl.createEl("p", { cls: "buches-claudian-scope", text: title });
+        const form = contentEl.createEl("form", { cls: "buches-name-form" });
+        const label = review ? "What would you like checked? (optional)" : "Your question";
+        const input = form.createEl("textarea", { attr: { "aria-label": label, placeholder: label, rows: 3 } });
+        input.required = !review;
+        const attempt = review && form.createEl("textarea", {
+          attr: { "aria-label": "Attempt to review", placeholder: "Paste an attempt or use the saved solution", rows: 3 }
+        });
+        const contextLabel = form.createEl("label", { cls: "buches-claudian-context-option" });
+        const related = contextLabel.createEl("input", { type: "checkbox" });
+        related.checked = true;
+        contextLabel.createSpan({ text: " Include related notes I\u2019ve read and prerequisites" });
+        const status = form.createEl("p", { cls: "buches-claudian-scope", attr: { role: "status" } });
+        const actions = form.createDiv({ cls: "buches-modal-actions" });
+        actions.createEl("button", { type: "button", text: "Cancel" }).addEventListener("click", () => this.close());
+        const send = actions.createEl("button", { type: "submit", text: "Send to Claudian", cls: "mod-cta" });
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          if (send.disabled) return;
+          send.disabled = true;
+          status.setText("Gathering context\u2026");
+          try {
+            const question = input.value.trim();
+            if (!review && !question) throw new Error("Enter a question.");
+            const proof = review && (attempt.value.trim() || await readAttempt(reader, state.file, focus));
+            if (review && !proof) throw new Error("Write a solution or paste your attempt to review.");
+            const page = await reader.plugin.learning.page(state.file);
+            const current = focus && page.nodes.find((node) => node.id === focus.id);
+            if (focus && !current) throw new Error("This block has changed. Reopen it in the reader.");
+            const context = related.checked ? await relatedReading(reader.plugin, state.model, state.file, focus, question) : [];
+            const ref = state.file.path + (focus?.id.startsWith("^") ? "#" + focus.id : "");
+            const request = review ? "Check my proof step by step. Identify the first gap, explain whether the conclusion follows, and give a focused hint for fixing it. Keep the full corrected proof for a follow-up request." : "Answer my question as a tutor. Use the supplied notes when relevant and cite their file or block references. Make any additional assumptions explicit.";
+            const prompt = [
+              request + " Treat note excerpts as reference material. Reply in chat without changing files or progress.",
+              question && `My question: ${question}`,
+              `Book: ${state.model.book.title}
+Focus: ${title}
+Source: ${ref}
+
+${chapterExcerpt(page, current)}`,
+              proof && `My attempt:
+${proof}`,
+              ...context.map((item) => `Related ${item.read ? "reading" : "prerequisite"}: ${item.ref}
+${item.text}`)
+            ].filter(Boolean).join("\n\n");
+            if (this.closed) return;
+            await handOff(reader.app, prompt);
+            this.close();
+          } catch (error) {
+            status.setText(error.message ?? String(error));
+          } finally {
+            send.disabled = false;
+          }
+        });
+        input.focus();
+      }
+      onClose() {
+        this.closed = true;
+      }
+    };
+    function patchRange(text, unit) {
+      if (!unit) return [text.length - stripFrontmatter(text, false).length, text.length];
+      const body = unit.source.indexOf("\n");
+      if (body < 0) throw new Error("This block has no body to rewrite.");
+      const anchor = unit.source.match(/(?:\r?\n(?:> ?)?|[ \t]+)\^[\w-]+[ \t]*$/);
+      return [unit.start + body + 1, anchor ? unit.start + anchor.index : unit.end];
+    }
+    async function openPatch(reader, file, focus) {
+      const edit = inlineEdit(reader.app);
+      if (!edit) throw new Error("Claudian Inline edit is unavailable.");
+      if (reader.file !== file || reader.sheet || reader.editingChapter) return;
+      await reader.toggleChapterEditor();
+      try {
+        const editor = reader.editor;
+        const text = editor.getValue();
+        const page = focus && await reader.plugin.learning.page(file, text);
+        if (reader.file !== file || !reader.editingChapter || reader.editor !== editor || editor.getValue() !== text) {
+          throw new Error("The note changed. Reopen the patch to select the current text.");
+        }
+        const current = page?.nodes.find((node) => node.id === focus.id);
+        if (focus && current?.unit.source.replace(/\r\n/g, "\n") !== focus.unit.source.replace(/\r\n/g, "\n")) {
+          throw new Error("The block changed. Reopen the patch to select the current text.");
+        }
+        const [start, end] = patchRange(text, current?.unit);
+        if (!text.slice(start, end).trim()) throw new Error("There is no text to rewrite.");
+        editor.setSelection(editor.offsetToPos(start), editor.offsetToPos(end));
+        await edit(editor, reader);
+      } finally {
+        if (reader.file === file && reader.editingChapter) await reader.toggleChapterEditor();
+      }
+    }
+    function studyActions(reader, host, state, focus, { review = false, patch = false, question = !review } = {}) {
+      if (!state.model || !claudian(reader.app)) return;
+      const actions = host.createSpan({ cls: "buches-claudian-actions" });
+      if (question) claudianButton(
+        actions,
+        "message-circle",
+        "Ask Claudian about this",
+        () => new StudyQuestion(reader, state, focus, false).open()
+      );
+      if (review) claudianButton(
+        actions,
+        "list-checks",
+        "Review my solution with Claudian",
+        () => new StudyQuestion(reader, state, focus, true).open()
+      );
+      if (patch && inlineEdit(reader.app)) {
+        claudianButton(
+          actions,
+          "wand-sparkles",
+          focus ? "Patch this block with Claudian" : "Patch this note with Claudian",
+          () => openPatch(reader, state.file, focus)
+        );
+      }
+    }
+    module2.exports = { claudian, studyActions, patchRange, handOff };
   }
 });
 
@@ -1668,6 +1930,7 @@ var require_reader = __commonJS({
     var { renderDashboard, renderBookProgress, renderDependencies, chapterLink, progressButton } = require_dashboard();
     var { renderMarkdown } = require_math();
     var { materializeSolution } = require_solution_notes();
+    var { claudian, studyActions } = require_claudian();
     var READER_VIEW2 = "buches-reader";
     var BuchReader2 = class extends MarkdownView {
       constructor(leaf, plugin) {
@@ -1811,6 +2074,7 @@ var require_reader = __commonJS({
           solutionMath,
           progress,
           progressError,
+          Boolean(claudian(this.app)),
           model?.book.title,
           model?.issues,
           model?.chapters.map((ch) => [
@@ -1859,6 +2123,7 @@ var require_reader = __commonJS({
         const body = page.createEl("article", { cls: "buches-reader-body markdown-rendered" });
         const units = parsed.units;
         const state = { file, model, progress, component, readerMath, solutionMath };
+        studyActions(this, bar, state, void 0, { patch: !sheet });
         const firstHeading = units[0]?.level === 1 ? units[0] : null;
         try {
           if (sheet && model) await this.renderExerciseSheet(body, context, state);
@@ -1878,6 +2143,11 @@ var require_reader = __commonJS({
             await this.renderUnit(unit, rendered, state);
             if (unit.node) {
               row.dataset.block = unit.node.id;
+              studyActions(this, row, state, unit.node, {
+                patch: Boolean(unit.callout && unit.node.type !== "exercise"),
+                review: unit.node.type === "exercise" && !unit.node.solution,
+                question: true
+              });
               const target = model?.targets.get(`${file.path}#${unit.node.id}`);
               if (target && unit.node.type === "exercise" && !unit.node.solution) {
                 progressButton(row, "Mark solved", statusFor2(model, progress, target), (done) => plugin.learn(model, target, done));
@@ -1948,6 +2218,7 @@ var require_reader = __commonJS({
               if (linked && linked !== target && linked !== chapter) prerequisites.add(linked);
             }
             const tools = row.createDiv({ cls: "buches-exam-tools" });
+            studyActions(this, tools, { ...state, file: chapter.file }, exercise, { review: !exercise.solution, question: true });
             const disclosure = tools.createEl("details", { cls: "buches-exam-prereqs buches-hint" });
             const summary = disclosure.createEl("summary", { text: "Prerequisites" });
             const popover = disclosure.createDiv({ cls: "buches-hint-popover" });
@@ -1992,6 +2263,7 @@ var require_reader = __commonJS({
         const inner = section.createDiv({ cls: "buches-solution-inner" });
         const tools = inner.createDiv({ cls: "buches-solution-tools" });
         const hintBar = tools.createDiv({ cls: "buches-hint-bar" });
+        studyActions(this, tools, state, exercise, { review: true });
         for (const [index, hint] of hints.entries()) {
           const disclosure = hintBar.createEl("details", { cls: "buches-hint" });
           const button = disclosure.createEl("summary", { attr: { "aria-label": `Hint ${index + 1}` } });
@@ -2623,7 +2895,7 @@ var BuchesPlugin = class extends Plugin {
     if (!context?.concept || this.lastRead.get(context.book.path) === context.file.path) return;
     this.lastRead.set(context.book.path, context.file.path);
     this.savePreferences();
-    for (const { view: navigator } of this.app.workspace.getLeavesOfType(VIEW_TYPE)) navigator.scheduleRender();
+    for (const { view: navigator2 } of this.app.workspace.getLeavesOfType(VIEW_TYPE)) navigator2.scheduleRender();
   }
   openExercises(file, leaf) {
     return this.openFile(file, leaf, true);

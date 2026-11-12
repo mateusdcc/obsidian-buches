@@ -8,6 +8,7 @@ const { countsFor, statusFor } = require('./progress');
 const { renderDashboard, renderBookProgress, renderDependencies, chapterLink, progressButton } = require('./dashboard');
 const { renderMarkdown } = require('./math');
 const { materializeSolution } = require('./solution-notes');
+const { claudian, studyActions } = require('./claudian');
 
 const READER_VIEW = 'buches-reader';
 
@@ -138,7 +139,7 @@ class BuchReader extends MarkdownView {
     if (this.file !== file || this.refreshTask !== task || this.editingChapter) return;
     const chapter = model?.byPath.get(file.path);
     const { readerMath, solutionMath } = plugin.settings;
-    const key = JSON.stringify([file.path, sheet, text, title, icon, intro, readerMath, solutionMath, progress, progressError,
+    const key = JSON.stringify([file.path, sheet, text, title, icon, intro, readerMath, solutionMath, progress, progressError, Boolean(claudian(this.app)),
       model?.book.title, model?.issues, model?.chapters.map(ch => [
         ch.path, ch.name, ch.description, ch.category, ch.nodes.map(node => sheet ? [node.id, node.unit.markdown, node.prompt, node.solution?.source] : [node.id, node.title]),
         ch.dependencies.map(dep => dep?.key),
@@ -182,6 +183,7 @@ class BuchReader extends MarkdownView {
     const body = page.createEl('article', { cls: 'buches-reader-body markdown-rendered' });
     const units = parsed.units;
     const state = { file, model, progress, component, readerMath, solutionMath };
+    studyActions(this, bar, state, undefined, { patch: !sheet });
     const firstHeading = units[0]?.level === 1 ? units[0] : null;
     try {
       if (sheet && model) await this.renderExerciseSheet(body, context, state);
@@ -202,6 +204,11 @@ class BuchReader extends MarkdownView {
         await this.renderUnit(unit, rendered, state);
         if (unit.node) {
           row.dataset.block = unit.node.id;
+          studyActions(this, row, state, unit.node, {
+            patch: Boolean(unit.callout && unit.node.type !== 'exercise'),
+            review: unit.node.type === 'exercise' && !unit.node.solution,
+            question: true,
+          });
           const target = model?.targets.get(`${file.path}#${unit.node.id}`);
           if (target && unit.node.type === 'exercise' && !unit.node.solution) {
             progressButton(row, 'Mark solved', statusFor(model, progress, target), done => plugin.learn(model, target, done));
@@ -279,6 +286,7 @@ class BuchReader extends MarkdownView {
           if (linked && linked !== target && linked !== chapter) prerequisites.add(linked);
         }
         const tools = row.createDiv({ cls: 'buches-exam-tools' });
+        studyActions(this, tools, { ...state, file: chapter.file }, exercise, { review: !exercise.solution, question: true });
         const disclosure = tools.createEl('details', { cls: 'buches-exam-prereqs buches-hint' });
         const summary = disclosure.createEl('summary', { text: 'Prerequisites' });
         const popover = disclosure.createDiv({ cls: 'buches-hint-popover' });
@@ -316,6 +324,7 @@ class BuchReader extends MarkdownView {
     const inner = section.createDiv({ cls: 'buches-solution-inner' });
     const tools = inner.createDiv({ cls: 'buches-solution-tools' });
     const hintBar = tools.createDiv({ cls: 'buches-hint-bar' });
+    studyActions(this, tools, state, exercise, { review: true });
     for (const [index, hint] of hints.entries()) {
       const disclosure = hintBar.createEl('details', { cls: 'buches-hint' });
       const button = disclosure.createEl('summary', { attr: { 'aria-label': `Hint ${index + 1}` } });

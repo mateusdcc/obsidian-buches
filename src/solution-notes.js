@@ -52,4 +52,4 @@ async function materializeSolution(plugin, chapter, book, unit, engine) {
   }
 }
 
-module.exports = { isSolutionEmbed, materializeSolution };
+module.exports = { isSolutionEmbed, resolveEmbed, materializeSolution };
