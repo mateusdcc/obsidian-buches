@@ -155,22 +155,24 @@ class BuchesView extends ItemView {
   }
   decorateProgress(row, book, concept, read, done, total) {
     const complete = done === total;
-    if (!complete || !read) {
-      const label = concept.children.length && !complete
-        ? `Mark ${concept.name} and its subtopics as done` : `Mark ${concept.name} as done`;
-      const button = iconButton(row, 'check', label, async () => {
-        button.disabled = true;
+    const addReadingAction = (next, icon, label) => {
+      const button = iconButton(row, icon, label, async () => {
+        const actions = row.querySelectorAll('.buches-reading-action');
+        actions.forEach(action => { action.disabled = true; });
         try {
-          await this.plugin.markConceptDone(book, concept);
+          await this.plugin.setConceptRead(book, concept, next);
           this.scheduleRender();
         } catch (error) {
-          new Notice(error.message || 'Could not mark the concept as done.');
+          new Notice(error.message || 'Could not update reading progress.');
         } finally {
-          button.disabled = false;
+          actions.forEach(action => { action.disabled = false; });
         }
-      }, 'buches-mark-done');
+      }, 'buches-reading-action');
       row.insertBefore(button, row.querySelector('.buches-exercises'));
-    }
+    };
+    const scope = concept.name + (concept.children.length ? ' and its subtopics' : '');
+    if (read || done) addReadingAction(false, 'circle-minus', `Mark ${scope} as unread`);
+    if (!complete || !read) addReadingAction(true, 'check', `Mark ${scope} as done`);
     if (!done) return;
     const badge = row.createEl('span', { cls: 'buches-tree-progress' });
     const percentage = complete ? 100 : Math.min(99, Math.max(1, Math.round(done / total * 100)));

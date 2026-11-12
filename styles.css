@@ -73,17 +73,17 @@
 .buches-view button.buches-title:focus-visible,
 .buches-view button.buches-icon-button:focus-visible { outline: 1px solid var(--interactive-accent); outline-offset: -1px; }
 
-:is(.buches-add, .buches-exercises, .buches-mark-done) { opacity: 0; pointer-events: none; }
-.buches-tree-row:is(:hover, :focus-within) > :is(.buches-add, .buches-exercises, .buches-mark-done) {
+:is(.buches-add, .buches-exercises, .buches-reading-action) { opacity: 0; pointer-events: none; }
+.buches-tree-row:is(:hover, :focus-within) > :is(.buches-add, .buches-exercises, .buches-reading-action) {
   opacity: 1;
   pointer-events: auto;
 }
 .buches-view button.buches-icon-button.buches-exercises:hover { color: var(--text-normal); }
 @media (hover: none) {
-  :is(.buches-add, .buches-exercises, .buches-mark-done) { opacity: 1; pointer-events: auto; }
+  :is(.buches-add, .buches-exercises, .buches-reading-action) { opacity: 1; pointer-events: auto; }
 }
 @media (hover: hover) {
-  .buches-view .buches-tree-row:not(:hover, :focus-within) > :is(.buches-add, .buches-exercises, .buches-mark-done) {
+  .buches-view .buches-tree-row:not(:hover, :focus-within) > :is(.buches-add, .buches-exercises, .buches-reading-action) {
     width: 0;
     padding: 0;
     overflow: hidden;

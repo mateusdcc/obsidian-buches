@@ -393,7 +393,7 @@ ${stringifyYaml(yaml).trimEnd()}
     }
     function statusFor2(model, chapters, target) {
       const row = chapters[relative(model.book, target.path)];
-      if (target.type !== "exercise") return row?.read === true || row?.mastered === true;
+      if (target.type !== "exercise") return (row?.read ?? row?.mastered) === true;
       return Array.isArray(row?.solved) && row.solved.includes(target.id);
     }
     function countsFor(model, chapters, selected = model.chapters) {
@@ -470,19 +470,19 @@ ${stringifyYaml(yaml).trimEnd()}
           return state;
         });
       }
-      markRead(model, paths) {
+      setRead(model, paths, read) {
         return this.write(model.book, (yaml) => {
           var _a;
           this.importLegacy(model, yaml);
           for (const path of paths) {
             const key = relative(model.book, path);
             const row = (_a = yaml.chapters)[key] ?? (_a[key] = {});
-            row.read = true;
+            row.read = read;
           }
         });
       }
       set(model, target, done) {
-        if (target.type !== "exercise") return this.markRead(model, [target.path]);
+        if (target.type !== "exercise") return this.setRead(model, [target.path], done);
         return this.write(model.book, (yaml) => {
           var _a;
           this.importLegacy(model, yaml);
@@ -702,21 +702,28 @@ var require_view = __commonJS({
       }
       decorateProgress(row, book, concept, read, done, total) {
         const complete = done === total;
-        if (!complete || !read) {
-          const label2 = concept.children.length && !complete ? `Mark ${concept.name} and its subtopics as done` : `Mark ${concept.name} as done`;
-          const button = iconButton(row, "check", label2, async () => {
-            button.disabled = true;
+        const addReadingAction = (next, icon, label2) => {
+          const button = iconButton(row, icon, label2, async () => {
+            const actions = row.querySelectorAll(".buches-reading-action");
+            actions.forEach((action) => {
+              action.disabled = true;
+            });
             try {
-              await this.plugin.markConceptDone(book, concept);
+              await this.plugin.setConceptRead(book, concept, next);
               this.scheduleRender();
             } catch (error) {
-              new Notice2(error.message || "Could not mark the concept as done.");
+              new Notice2(error.message || "Could not update reading progress.");
             } finally {
-              button.disabled = false;
+              actions.forEach((action) => {
+                action.disabled = false;
+              });
             }
-          }, "buches-mark-done");
+          }, "buches-reading-action");
           row.insertBefore(button, row.querySelector(".buches-exercises"));
-        }
+        };
+        const scope = concept.name + (concept.children.length ? " and its subtopics" : "");
+        if (read || done) addReadingAction(false, "circle-minus", `Mark ${scope} as unread`);
+        if (!complete || !read) addReadingAction(true, "check", `Mark ${scope} as done`);
         if (!done) return;
         const badge = row.createEl("span", { cls: "buches-tree-progress" });
         const percentage = complete ? 100 : Math.min(99, Math.max(1, Math.round(done / total * 100)));
@@ -3006,10 +3013,10 @@ var BuchesPlugin = class extends Plugin {
     })).catch((error) => this.report(error, "Could not save B\xFCcher preferences."));
     return this.settingsSave;
   }
-  async markConceptDone(book, concept) {
+  async setConceptRead(book, concept, read) {
     const model = await this.learning.book(book);
     const paths = flattenConcepts([concept]).map((item) => item.file.path);
-    await this.progress.markRead(model, paths);
+    await this.progress.setRead(model, paths, read);
     this.scheduleRefresh();
   }
   async learn(model, target, done) {

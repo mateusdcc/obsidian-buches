@@ -22,7 +22,7 @@ function updateProgress(text, update) {
 
 function statusFor(model, chapters, target) {
   const row = chapters[relative(model.book, target.path)];
-  if (target.type !== 'exercise') return row?.read === true || row?.mastered === true;
+  if (target.type !== 'exercise') return (row?.read ?? row?.mastered) === true;
   return Array.isArray(row?.solved) && row.solved.includes(target.id);
 }
 
@@ -97,19 +97,19 @@ class BookProgress {
     });
   }
 
-  markRead(model, paths) {
+  setRead(model, paths, read) {
     return this.write(model.book, yaml => {
       this.importLegacy(model, yaml);
       for (const path of paths) {
         const key = relative(model.book, path);
         const row = yaml.chapters[key] ??= {};
-        row.read = true;
+        row.read = read;
       }
     });
   }
 
   set(model, target, done) {
-    if (target.type !== 'exercise') return this.markRead(model, [target.path]);
+    if (target.type !== 'exercise') return this.setRead(model, [target.path], done);
     return this.write(model.book, yaml => {
       this.importLegacy(model, yaml);
       const key = relative(model.book, target.path);

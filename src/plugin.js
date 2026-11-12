@@ -239,10 +239,10 @@ class BuchesPlugin extends Plugin {
     })).catch(error => this.report(error, 'Could not save Bücher preferences.'));
     return this.settingsSave;
   }
-  async markConceptDone(book, concept) {
+  async setConceptRead(book, concept, read) {
     const model = await this.learning.book(book);
     const paths = flattenConcepts([concept]).map(item => item.file.path);
-    await this.progress.markRead(model, paths);
+    await this.progress.setRead(model, paths, read);
     this.scheduleRefresh();
   }
 
