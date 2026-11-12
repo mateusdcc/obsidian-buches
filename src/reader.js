@@ -1,16 +1,19 @@
 const { Component, MarkdownView, Keymap, setIcon } = require('obsidian');
 const { findBuchContext, flattenConcepts } = require('./buch-model');
-const { getIntroduction } = require('./intro-model');
+const { getIntroduction, stripFrontmatter } = require('./intro-model');
 const { getPagination } = require('./order-model');
 const { renderPagination, withFinish } = require('./pagination');
 const { iconFor, renderFileIcon } = require('./icons');
 const { countsFor, statusFor } = require('./progress');
 const { renderDashboard, renderBookProgress, renderDependencies, chapterLink, progressButton } = require('./dashboard');
 const { renderMarkdown } = require('./math');
-const { materializeSolution } = require('./solution-notes');
+const { materializeSolution, appendSolutionTab, solutionTabs } = require('./solution-notes');
 const { claudian, studyActions } = require('./claudian');
+const { NameModal } = require('./name-modal');
+const { GradeModal } = require('./grading');
 
 const READER_VIEW = 'buches-reader';
+const emptySolution = exercise => ({ exercise, hints: [], markdown: '', source: '', virtual: true });
 
 class BuchReader extends MarkdownView {
   constructor(leaf, plugin) {
@@ -18,6 +21,7 @@ class BuchReader extends MarkdownView {
     this.plugin = plugin;
     this.sheet = false;
     this.embeds = new Set();
+    this.selectedSolutions = new Map();
   }
 
   getViewType() { return READER_VIEW; }
@@ -139,7 +143,7 @@ class BuchReader extends MarkdownView {
     if (this.file !== file || this.refreshTask !== task || this.editingChapter) return;
     const chapter = model?.byPath.get(file.path);
     const { readerMath, solutionMath } = plugin.settings;
-    const key = JSON.stringify([file.path, sheet, text, title, icon, intro, readerMath, solutionMath, progress, progressError, Boolean(claudian(this.app)),
+    const key = JSON.stringify([file.path, sheet, text, title, icon, intro, readerMath, solutionMath, progress, progressError, Boolean(claudian(this.app)), plugin.aiSolutions.revision,
       model?.book.title, model?.issues, model?.chapters.map(ch => [
         ch.path, ch.name, ch.description, ch.category, ch.nodes.map(node => sheet ? [node.id, node.unit.markdown, node.prompt, node.solution?.source] : [node.id, node.title]),
         ch.dependencies.map(dep => dep?.key),
@@ -206,12 +210,11 @@ class BuchReader extends MarkdownView {
           row.dataset.block = unit.node.id;
           studyActions(this, row, state, unit.node, {
             patch: Boolean(unit.callout && unit.node.type !== 'exercise'),
-            review: unit.node.type === 'exercise' && !unit.node.solution,
             question: true,
           });
           const target = model?.targets.get(`${file.path}#${unit.node.id}`);
           if (target && unit.node.type === 'exercise' && !unit.node.solution) {
-            progressButton(row, 'Mark solved', statusFor(model, progress, target), done => plugin.learn(model, target, done));
+            await this.renderSolution(row, emptySolution(unit.node), state);
           }
         } else if (unit.anchor) row.dataset.block = `^${unit.anchor}`;
         if (unit.node?.type === 'exercise') rendered.querySelector('h2,h3,h4,h5,h6')?.addClass('buches-exercise-heading');
@@ -286,7 +289,7 @@ class BuchReader extends MarkdownView {
           if (linked && linked !== target && linked !== chapter) prerequisites.add(linked);
         }
         const tools = row.createDiv({ cls: 'buches-exam-tools' });
-        studyActions(this, tools, { ...state, file: chapter.file }, exercise, { review: !exercise.solution, question: true });
+        studyActions(this, tools, { ...state, file: chapter.file }, exercise, { question: true });
         const disclosure = tools.createEl('details', { cls: 'buches-exam-prereqs buches-hint' });
         const summary = disclosure.createEl('summary', { text: 'Prerequisites' });
         const popover = disclosure.createDiv({ cls: 'buches-hint-popover' });
@@ -295,12 +298,10 @@ class BuchReader extends MarkdownView {
         this.bindPopover(disclosure, summary, state.component);
         progressButton(tools, 'Mark solved', statusFor(model, progress, target),
           done => this.plugin.learn(model, target, done));
-        if (exercise.solution) {
-          const practice = row.createEl('details', { cls: 'buches-exam-solution' });
-          practice.dataset.stateKey = `practice:${target.key}`;
-          practice.createEl('summary', { text: 'Solution and hints' });
-          await this.renderSolution(practice, exercise.solution, { ...state, file: chapter.file }, false);
-        }
+        const practice = row.createEl('details', { cls: 'buches-exam-solution' });
+        practice.dataset.stateKey = `practice:${target.key}`;
+        practice.createEl('summary', { text: 'Solution and hints' });
+        await this.renderSolution(practice, exercise.solution ?? emptySolution(exercise), { ...state, file: chapter.file }, false);
       }
     }
     if (!number) body.createEl('p', { cls: 'buches-context-empty', text: 'No exercises yet.' });
@@ -324,7 +325,7 @@ class BuchReader extends MarkdownView {
     const inner = section.createDiv({ cls: 'buches-solution-inner' });
     const tools = inner.createDiv({ cls: 'buches-solution-tools' });
     const hintBar = tools.createDiv({ cls: 'buches-hint-bar' });
-    studyActions(this, tools, state, exercise, { review: true });
+    studyActions(this, tools, state, exercise, { review: true, selectedSolution: () => note });
     for (const [index, hint] of hints.entries()) {
       const disclosure = hintBar.createEl('details', { cls: 'buches-hint' });
       const button = disclosure.createEl('summary', { attr: { 'aria-label': `Hint ${index + 1}` } });
@@ -351,19 +352,85 @@ class BuchReader extends MarkdownView {
     setIcon(summary.createSpan({ cls: 'buches-solution-chevron', attr: { 'aria-hidden': 'true' } }), 'chevron-right');
     summary.createSpan({ cls: 'buches-solution-reveal', text: 'Reveal solution' });
     summary.createSpan({ cls: 'buches-solution-hide', text: 'Hide solution' });
+    const tabs = [{ path: '', title: 'Solution 1' }, ...solutionTabs(unit).map((tab, index) => ({
+      ...tab, title: tab.kind === 'ai' ? `AI · Solution ${index + 2}` : `Solution ${index + 2}`,
+    }))];
+    const tabKey = details.dataset.stateKey;
+    const active = tabs.find(tab => tab.path === this.selectedSolutions.get(tabKey)) ?? tabs[0];
+    const tabBar = details.createDiv({ cls: 'buches-solution-tabs', attr: { 'aria-label': 'Solutions' } });
+    const changeTab = async path => {
+      this.selectedSolutions.set(tabKey, path);
+      this.renderKey = null;
+      await this.refresh();
+    };
+    const saveCurrent = async () => {
+      if (pending) await pending;
+      if (embed?.editor && !await this.finishEmbedEdit(embed)) throw new Error('Save the current solution before switching.');
+    };
+    const addTabButton = (title, action, cls = '') => {
+      const button = tabBar.createEl('button', { text: title, cls, attr: { type: 'button' } });
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        try { await action(); }
+        catch (error) { this.plugin.report(error, error.message || 'Could not open the solution tab.'); }
+        finally { button.disabled = false; }
+      });
+      return button;
+    };
+    for (const tab of tabs) {
+      const button = addTabButton(tab.title, async () => {
+        if (tab === active) return;
+        await saveCurrent();
+        await changeTab(tab.path);
+      });
+      button.setAttribute('aria-pressed', String(tab === active));
+    }
+    const createTab = async kind => {
+      await saveCurrent();
+      return appendSolutionTab(this.plugin, file, model.book, unit, kind, state.solutionMath);
+    };
+    addTabButton('+ Solution', async () => changeTab((await createTab('manual')).path), 'buches-solution-tab-add');
+    if (claudian(this.app)?.api?.version === 1) {
+      addTabButton('+ AI', () => {
+        let created;
+        new NameModal(this.app, {
+          title: 'AI solution',
+          placeholder: 'Proof method or first step you want to see',
+          submitText: 'Ask Claudian',
+          onSubmit: async instructions => {
+            created ??= await createTab('ai');
+            try { await this.plugin.aiSolutions.ask(created, file, exercise, instructions); }
+            finally { await changeTab(created.path); }
+          },
+        }).open();
+      }, 'buches-solution-tab-add');
+    }
     const rendered = details.createDiv({ cls: 'buches-solution-body' });
     const edit = tools.createEl('button', { cls: 'buches-block-edit',
       attr: { 'aria-label': 'Edit solution', title: 'Edit solution' } });
     setIcon(edit, 'pencil');
     let embed;
-    let note;
+    let note = active.path ? this.app.vault.getAbstractFileByPath(active.path) : null;
     let pending;
-    const ensureEmbed = () => pending ??= (async () => {
+    if (note && this.plugin.aiSolutions.isPending(note)) {
+      const waiting = details.createDiv({ cls: 'buches-solution-waiting', attr: { role: 'status' } });
+      waiting.createSpan({ text: 'Waiting for Claudian…' });
+      waiting.createEl('button', { text: 'Stop waiting', attr: { type: 'button' } })
+        .addEventListener('click', () => this.plugin.aiSolutions.cancel(note));
+    }
+    const ensureContent = (native = false) => pending ??= (async () => {
       this.solutionLoading = (this.solutionLoading ?? 0) + 1;
       try {
-        note = await materializeSolution(this.plugin, file, model.book, unit, state.solutionMath);
+        if (!active.path) note = await materializeSolution(this.plugin, file, model.book, unit, state.solutionMath);
         if (!note) throw new Error('The linked solution note could not be found.');
         if (!rendered.isConnected) return;
+        const source = await this.app.vault.read(note);
+        if (!rendered.isConnected) return;
+        if (!native && (active.kind === 'ai' || /^---\r?\nrenderer: latex\r?\n/.test(source))) {
+          rendered.empty();
+          await this.render(stripFrontmatter(source), rendered, { ...state, file: note }, 'mathjax');
+          return;
+        }
         const create = this.app.embedRegistry?.getEmbedCreator(note);
         if (!create) {
           await this.render(`![[${note.path}]]`, rendered, state);
@@ -386,8 +453,24 @@ class BuchReader extends MarkdownView {
       }
     })();
     details.addEventListener('toggle', () => {
-      if (details.open) void ensureEmbed();
+      if (details.open && !unit.virtual) void ensureContent();
       else if (embed?.editor) void this.finishEmbedEdit(embed).then(updateEditButton);
+    });
+    const grade = tools.createEl('button', { cls: 'buches-block-edit',
+      attr: { 'aria-label': 'Grade this solution', title: 'Grade this solution', type: 'button' } });
+    setIcon(grade, 'chart-no-axes-column');
+    grade.addEventListener('click', async () => {
+      grade.disabled = true;
+      try {
+        await saveCurrent();
+        if (!note) note = await materializeSolution(this.plugin, file, model.book, unit, state.solutionMath);
+        if (!note) throw new Error('The solution note could not be found.');
+        new GradeModal(this, state, exercise, note).open();
+      } catch (error) {
+        this.plugin.report(error, error.message || 'Could not open the grade.');
+      } finally {
+        grade.disabled = false;
+      }
     });
     const updateEditButton = () => {
       const editing = Boolean(embed?.editor);
@@ -398,14 +481,23 @@ class BuchReader extends MarkdownView {
     };
     edit.addEventListener('click', async () => {
       details.open = true;
-      await ensureEmbed();
+      if (note && this.plugin.aiSolutions.isPending(note)) return;
+      if (pending) await pending;
+      if (!embed) {
+        pending = null;
+        await ensureContent(true);
+      }
       if (!embed) {
         if (note) await this.app.workspace.getLeaf('tab').openFile(note, { state: { mode: 'source' } });
         return;
       }
       const editing = Boolean(embed.editor);
-      if (editing) await this.finishEmbedEdit(embed);
-      else embed.showEditor();
+      if (editing) {
+        if (await this.finishEmbedEdit(embed)) {
+          this.renderKey = null;
+          await this.refresh();
+        }
+      } else embed.showEditor();
       updateEditButton();
     });
   }
@@ -415,8 +507,10 @@ class BuchReader extends MarkdownView {
       await this.flushEmbeds();
       embed.showPreview();
       this.plugin.scheduleRefresh();
+      return true;
     } catch (error) {
       this.plugin.report(error, 'Could not save the solution note.');
+      return false;
     }
   }
 

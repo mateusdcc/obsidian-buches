@@ -3,6 +3,7 @@ const { dividerLines } = require('./resolution');
 const { flattenConcepts } = require('./buch-model');
 
 const LEARNING_TYPES = new Set(['definition', 'theorem', 'lemma', 'proposition', 'corollary', 'example', 'exercise']);
+const ADDED_SOLUTION = '<!-- buches-added-solution -->';
 const SOLUTION_ENGINE = /^<!-- buches-math: (mathjax|typst) -->[ \t]*(?:\r?\n|$)/;
 
 function sourceParts(text) {
@@ -29,8 +30,10 @@ async function parsePage(text, metadata) {
   for (const part of sourceParts(text)) {
     const source = text.slice(part.start, part.end);
     if (part.type === 'solution') {
-      const engine = source.match(SOLUTION_ENGINE)?.[1];
-      units.push({ ...part, source, engine, markdown: source.replace(SOLUTION_ENGINE, '') });
+      const added = source.startsWith(ADDED_SOLUTION + '\n') || source.startsWith(ADDED_SOLUTION + '\r\n');
+      const body = added ? source.slice(source.indexOf('\n') + 1) : source;
+      const engine = body.match(SOLUTION_ENGINE)?.[1];
+      units.push({ ...part, source, engine, added, markdown: body.replace(SOLUTION_ENGINE, '') });
       continue;
     }
     if (!source.trim()) continue;
@@ -90,8 +93,13 @@ async function parsePage(text, metadata) {
       if (prompt && unit !== prompt.unit && !unit.callout && !hints.length) prompt.prompt.push(unit.markdown);
       continue;
     }
-    solutionCount++;
-    const legacyId = lastHeading ? `${lastHeading}#${count(legacyOccurrences, lastHeading)}` : `solution-${solutionCount}`;
+    // Added solutions already belong to a named exercise. Keep positional IDs in old books stable.
+    if (unit.added && !prompt) continue;
+    let legacyId;
+    if (!unit.added) {
+      solutionCount++;
+      legacyId = lastHeading ? `${lastHeading}#${count(legacyOccurrences, lastHeading)}` : `solution-${solutionCount}`;
+    }
     if (!prompt) {
       prompt = { id: legacyId, title: lastHeading ?? `Exercise ${solutionCount}`, type: 'exercise', unit };
       nodes.push(prompt);
@@ -178,4 +186,4 @@ class LearningIndex {
   }
 }
 
-module.exports = { LearningIndex, parsePage, sourceParts, SOLUTION_ENGINE };
+module.exports = { LearningIndex, parsePage, sourceParts, SOLUTION_ENGINE, ADDED_SOLUTION };

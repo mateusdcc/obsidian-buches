@@ -1,6 +1,6 @@
 const { Modal, Notice, setIcon } = require('obsidian');
 const { stripFrontmatter } = require('./intro-model');
-const { isSolutionEmbed, resolveEmbed } = require('./solution-notes');
+const { isSolutionEmbed, resolveEmbed, primarySolution } = require('./solution-notes');
 const { relatedReading, chapterExcerpt } = require('./study-context');
 
 const CLAUDIAN = 'realclaudian';
@@ -29,7 +29,7 @@ async function handOff(app, prompt) {
   if (session) {
     const status = await api.send(session, { text: prompt, mode: 'queue' });
     new Notice(status === 'queued' ? 'Question queued in Claudian.' : 'Sent to Claudian.');
-    return;
+    return session;
   }
   const chat = plugin.views?.getView?.() ?? app.workspace.getLeavesOfType('claudian-view')[0]?.view;
   if (chat?.appendToActiveInput?.(prompt)) {
@@ -55,21 +55,23 @@ function claudianButton(parent, icon, label, action) {
   return button;
 }
 
-async function readAttempt(reader, file, exercise) {
+async function readAttempt(reader, file, exercise, selectedSolution) {
   await reader.flushEmbeds();
+  const selected = selectedSolution?.();
+  if (selected) return stripFrontmatter(await reader.app.vault.read(selected));
   const plugin = reader.plugin;
   const page = await plugin.learning.page(file, await reader.app.vault.read(file));
   const solution = page.nodes.find(node => node.id === exercise.id)?.solution;
   if (!solution) return '';
-  if (!isSolutionEmbed(solution)) return solution.markdown.trim();
+  if (!isSolutionEmbed(solution)) return primarySolution(solution);
   const note = resolveEmbed(reader.app, file, solution);
   return note ? stripFrontmatter(await reader.app.vault.read(note)) : '';
 }
 
 class StudyQuestion extends Modal {
-  constructor(reader, state, focus, review) {
+  constructor(reader, state, focus, review, selectedSolution) {
     super(reader.app);
-    Object.assign(this, { reader, state, focus, review });
+    Object.assign(this, { reader, state, focus, review, selectedSolution });
   }
 
   onOpen() {
@@ -101,7 +103,7 @@ class StudyQuestion extends Modal {
       try {
         const question = input.value.trim();
         if (!review && !question) throw new Error('Enter a question.');
-        const proof = review && (attempt.value.trim() || await readAttempt(reader, state.file, focus));
+        const proof = review && (attempt.value.trim() || await readAttempt(reader, state.file, focus, this.selectedSolution));
         if (review && !proof) throw new Error('Write a solution or paste your attempt to review.');
         const page = await reader.plugin.learning.page(state.file);
         const current = focus && page.nodes.find(node => node.id === focus.id);
@@ -167,13 +169,13 @@ async function openPatch(reader, file, focus) {
   }
 }
 
-function studyActions(reader, host, state, focus, { review = false, patch = false, question = !review } = {}) {
+function studyActions(reader, host, state, focus, { review = false, patch = false, question = !review, selectedSolution } = {}) {
   if (!state.model || !claudian(reader.app)) return;
   const actions = host.createSpan({ cls: 'buches-claudian-actions' });
   if (question) claudianButton(actions, 'message-circle', 'Ask Claudian about this',
     () => new StudyQuestion(reader, state, focus, false).open());
   if (review) claudianButton(actions, 'list-checks', 'Review my solution with Claudian',
-    () => new StudyQuestion(reader, state, focus, true).open());
+    () => new StudyQuestion(reader, state, focus, true, selectedSolution).open());
   if (patch && inlineEdit(reader.app)) {
     claudianButton(actions, 'wand-sparkles', focus ? 'Patch this block with Claudian' : 'Patch this note with Claudian',
       () => openPatch(reader, state.file, focus));

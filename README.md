@@ -8,7 +8,7 @@ Turn a folder of Markdown notes into a book with ordered chapters, an exercise s
 
 ## Install
 
-1. Download `buches-0.3.2.zip` from the [GitHub release](https://github.com/mateusdcc/obsidian-buches/releases/latest).
+1. Download `buches-0.4.0.zip` from the [GitHub release](https://github.com/mateusdcc/obsidian-buches/releases/latest).
 2. Extract its `buches` folder into `<vault>/.obsidian/plugins/`. The folder should contain `main.js`, `manifest.json`, and `styles.css`.
 3. In Obsidian, enable **Bücher** under **Settings → Community plugins**. Click the library ribbon icon or run **Open Buches**.
 4. To try the sample, extract `demo-book.zip` into your vault, or copy the repository’s [demo/Buches](demo/Buches/) folder to the vault root. Keep your existing `Buches` folder if you already have one; copy only the sample book into it.
@@ -35,6 +35,28 @@ Hover or focus a book or concept in the navigator, then select the clipboard ico
 On first reveal, an existing worked proof moves into a regular Markdown note in the book’s `_solutions/` folder and the chapter gains an Obsidian `![[…]]` embed. The pencil opens the native embed editor, and the check closes it. The embedded note saves using Obsidian’s editor. Numbered lamps show hints when requested.
 
 Under **Settings → Buches**, choose **Reader math** and the default **Solution math** for newly created solution notes. An explicit `buches-math` comment chooses the engine when its proof is moved. The generated note stores that choice as a `renderer` property.
+
+## Solution tabs
+
+Open **Reveal solution** and choose **+ Solution** to keep another attempt for the same exercise. **+ AI** appears when Claudian is enabled. Specify a proof method, or ask for just the first step. For example, request a proof of $\det(A^T)=\det(A)$ by reindexing the Leibniz formula.
+
+Claudian's matching reply is saved in the new AI tab while Bücher is open. If no session is active, send the prepared draft in Claudian. You can switch between attempts, edit them with the pencil, and review the selected attempt. Each tab is stored as a separate note under the book's `_solutions/` folder. Exercise completion is shared across tabs.
+
+## Grading solutions
+
+The bar-chart button opens the grade for the selected solution. Click **Grade solution** to submit it to Claudian. The result shows each criterion, its score from 0 to 10, the reason, and comments next to the lines being discussed. Bücher calculates the weighted total. Changing the solution or the rubric prompts for a new grade.
+
+Configure criteria in the book’s `_index.md`:
+
+```yaml
+grading:
+  - id: correctness
+    label: Correctness
+    weight: 1
+    criteria: Check every inference and whether the proof establishes the stated conclusion.
+```
+
+Add as many criteria as needed, with unique IDs and positive weights. The grade is attached to the selected solution note.
 
 ## Study with Claudian
 

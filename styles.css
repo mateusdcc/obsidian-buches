@@ -766,3 +766,56 @@
   background: conic-gradient(currentColor var(--buches-completion), var(--background-modifier-border) 0);
   mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1.5px));
 }
+
+.buches-solution-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-block: 4px 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.buches-solution-tabs button {
+  background: transparent;
+  box-shadow: none;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+.buches-solution-tabs button[aria-pressed="true"] {
+  background: var(--background-modifier-hover);
+  color: var(--text-accent);
+}
+
+.buches-solution-tabs .buches-solution-tab-add:hover {
+  color: var(--text-normal);
+}
+
+.buches-solution-waiting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-block: 8px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.buches-grade-total {
+  font-size: var(--font-ui-larger);
+  font-weight: var(--font-semibold);
+  color: var(--text-accent);
+}
+
+.buches-grade-item { margin-block: 0 14px; }
+.buches-grade-item progress { display: block; width: 100%; margin-block: 4px; }
+.buches-grade-item p { margin: 4px 0; color: var(--text-muted); }
+.buches-grade-annotations { margin-block-start: 16px; }
+.buches-graded-source { margin-block-start: 8px; }
+.buches-grade-comment small { color: var(--text-muted); }
+.buches-grade-comment {
+  margin: 4px 0 10px;
+  padding: 4px 8px;
+  border-inline-start: 2px solid var(--interactive-accent);
+  background: var(--background-secondary);
+}

@@ -12,6 +12,7 @@ const { BuchReader, READER_VIEW } = require('./reader');
 const { LearningIndex } = require('./learning');
 const { BookProgress, statusFor } = require('./progress');
 const { BuchSettings, readSettings } = require('./settings');
+const { AiSolutions } = require('./ai-solutions');
 
 class BuchesPlugin extends Plugin {
   async onload() {
@@ -30,6 +31,7 @@ class BuchesPlugin extends Plugin {
     this.progress = new BookProgress(this.app, data?.solved ?? {});
     this.learning = new LearningIndex(this.app);
     this.solutionWrites = new Map();
+    this.aiSolutions = new AiSolutions(this);
     this.settingsSave = Promise.resolve();
     this.addSettingTab(new BuchSettings(this.app, this));
     this.registerView(READER_VIEW, leaf => new BuchReader(leaf, this));
@@ -70,6 +72,9 @@ class BuchesPlugin extends Plugin {
     for (const event of ['create','delete','modify']) this.registerEvent(this.app.vault.on(event, file => {
       if (file?.path?.startsWith('Buches/')) {
         if (event === 'delete') this.learning.pages.delete(file.path);
+        if (/^Buches\/[^/]+\/_solutions\//.test(file.path)) {
+          for (const leaf of this.app.workspace.getLeavesOfType(READER_VIEW)) leaf.view.renderKey = null;
+        }
         this.scheduleRefresh();
       }
     }));
