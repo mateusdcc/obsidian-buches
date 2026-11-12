@@ -1938,15 +1938,20 @@ var require_solution_notes = __commonJS({
     var { ensureFolder } = require_storage();
     var { ADDED_SOLUTION } = require_learning();
     var EMBED = /^!\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]$/;
+    var PRIMARY_AI = "<!-- buches-primary-ai -->";
     var TAB = /^<!-- buches-solution-tab: (manual|ai) -->\r?\n(!\[\[[^\r\n]+\]\])[ \t]*\r?$/gm;
     function solutionTabs(unit) {
       return [...unit.markdown.matchAll(TAB)].flatMap((match) => {
         const path = match[2].match(EMBED)?.[1];
-        return path ? [{ kind: match[1], path, offset: match.index }] : [];
+        return path ? [{ kind: match[1], path, offset: match.index, end: match.index + match[0].length }] : [];
       });
     }
     function primarySolution(unit) {
-      return unit.markdown.slice(0, solutionTabs(unit)[0]?.offset ?? unit.markdown.length).trim();
+      const body = unit.markdown.slice(0, solutionTabs(unit)[0]?.offset ?? unit.markdown.length).trim();
+      return body.startsWith(PRIMARY_AI) ? body.slice(PRIMARY_AI.length).trim() : body;
+    }
+    function primaryKind(unit) {
+      return unit.markdown.trimStart().startsWith(PRIMARY_AI) ? "ai" : "manual";
     }
     function isSolutionEmbed(unit) {
       return EMBED.test(primarySolution(unit));
@@ -1956,12 +1961,21 @@ var require_solution_notes = __commonJS({
       if (!path) return null;
       return app.metadataCache.getFirstLinkpathDest(path, chapter.path) ?? app.vault.getAbstractFileByPath(path.endsWith(".md") ? path : `${path}.md`);
     }
-    async function writeSolution(plugin, chapter, book, unit, kind, engine) {
-      const { vault } = plugin.app;
+    async function queueSolutionWrite(plugin, chapter, write) {
       const key = chapter.path;
       const previous = plugin.solutionWrites.get(key) ?? Promise.resolve();
       const operation = previous.catch(() => {
-      }).then(async () => {
+      }).then(write);
+      plugin.solutionWrites.set(key, operation);
+      try {
+        return await operation;
+      } finally {
+        if (plugin.solutionWrites.get(key) === operation) plugin.solutionWrites.delete(key);
+      }
+    }
+    function writeSolution(plugin, chapter, book, unit, kind, engine) {
+      const { vault } = plugin.app;
+      return queueSolutionWrite(plugin, chapter, async () => {
         const latest = await vault.read(chapter);
         const page = await plugin.learning.page(chapter, latest);
         const exercise = page.nodes.find((node) => node.type === "exercise" && node.id === unit.exercise.id);
@@ -2022,12 +2036,36 @@ ${body}`;
         }
         return note;
       });
-      plugin.solutionWrites.set(key, operation);
-      try {
-        return await operation;
-      } finally {
-        if (plugin.solutionWrites.get(key) === operation) plugin.solutionWrites.delete(key);
-      }
+    }
+    async function removeSolutionTab(plugin, chapter, book, unit, path, engine) {
+      const { app } = plugin;
+      const { vault } = app;
+      const original = path === "" ? await materializeSolution(plugin, chapter, book, unit, engine) : null;
+      return queueSolutionWrite(plugin, chapter, async () => {
+        const latest = await vault.read(chapter);
+        const page = await plugin.learning.page(chapter, latest);
+        const current = page.nodes.find((node) => node.type === "exercise" && node.id === unit.exercise.id)?.solution;
+        const tabs = current ? solutionTabs(current) : [];
+        if (!tabs.length) throw new Error("Keep at least one solution tab.");
+        const tab = path === "" ? tabs[0] : tabs.find((item) => item.path === path);
+        if (!tab || path === "" && (!original || resolveEmbed(app, chapter, current)?.path !== original.path)) {
+          throw new Error("The solution changed. Reopen it and try again.");
+        }
+        const open = ["markdown", "buches-reader"].flatMap((type) => app.workspace.getLeavesOfType(type));
+        if (open.some(({ view }) => view.file === chapter && view.getViewData?.() !== latest && view.dirty)) {
+          throw new Error("Save the chapter edits before deleting a solution tab.");
+        }
+        const { markdown } = current;
+        const newline = latest.includes("\r\n") ? "\r\n" : "\n";
+        const end = markdown[tab.end] === "\n" ? tab.end + 1 : tab.end;
+        const replacement = path === "" ? (tab.kind === "ai" ? PRIMARY_AI + newline : "") + `![[${tab.path}]]` + newline : markdown.slice(0, tab.offset);
+        const start = current.end - markdown.length;
+        await vault.process(chapter, (text) => {
+          if (text !== latest) throw new Error("The chapter changed. Try again.");
+          return text.slice(0, start) + replacement + markdown.slice(end) + text.slice(current.end);
+        });
+        return path === "" ? tab.path : null;
+      });
     }
     function materializeSolution(plugin, chapter, book, unit, engine) {
       if (isSolutionEmbed(unit)) return resolveEmbed(plugin.app, chapter, unit);
@@ -2036,7 +2074,7 @@ ${body}`;
     function appendSolutionTab(plugin, chapter, book, unit, kind, engine) {
       return writeSolution(plugin, chapter, book, unit, kind, engine);
     }
-    module2.exports = { isSolutionEmbed, resolveEmbed, materializeSolution, appendSolutionTab, solutionTabs, primarySolution };
+    module2.exports = { isSolutionEmbed, resolveEmbed, materializeSolution, appendSolutionTab, solutionTabs, primarySolution, primaryKind, removeSolutionTab };
   }
 });
 
@@ -2969,7 +3007,7 @@ var require_reader = __commonJS({
     var { countsFor, statusFor: statusFor2 } = require_progress();
     var { renderDashboard, renderBookProgress, renderDependencies, chapterLink, progressButton } = require_dashboard();
     var { renderMarkdown } = require_math();
-    var { materializeSolution, appendSolutionTab, solutionTabs } = require_solution_notes();
+    var { materializeSolution, appendSolutionTab, solutionTabs, primaryKind, removeSolutionTab, resolveEmbed } = require_solution_notes();
     var { claudian, studyActions } = require_claudian();
     var { AiSolutionModal } = require_ai_solutions();
     var { GradeModal, preserveLegacyReview } = require_grading();
@@ -3349,7 +3387,8 @@ var require_reader = __commonJS({
         setIcon(summary.createSpan({ cls: "buches-solution-chevron", attr: { "aria-hidden": "true" } }), "chevron-right");
         summary.createSpan({ cls: "buches-solution-reveal", text: "Reveal solution" });
         summary.createSpan({ cls: "buches-solution-hide", text: "Hide solution" });
-        const tabs = [{ path: "", title: "Solution 1" }, ...solutionTabs(unit).map((tab, index) => ({
+        const kind = primaryKind(unit);
+        const tabs = [{ path: "", kind, title: kind === "ai" ? "AI \xB7 Solution 1" : "Solution 1" }, ...solutionTabs(unit).map((tab, index) => ({
           ...tab,
           title: tab.kind === "ai" ? `AI \xB7 Solution ${index + 2}` : `Solution ${index + 2}`
         }))];
@@ -3390,20 +3429,55 @@ var require_reader = __commonJS({
           });
           return button;
         };
+        const removeTab = async (tab) => {
+          if (tabs.length < 2) return;
+          await saveCurrent();
+          const promoted = await removeSolutionTab(this.plugin, file, model.book, unit, tab.path, state.solutionMath);
+          const remap = (path) => path === promoted ? "" : path;
+          const remaining = tabs.filter((item) => item !== tab);
+          const selected = active === tab ? remaining[Math.min(tabs.indexOf(tab), remaining.length - 1)] : active;
+          this.selectedSolutions.set(tabKey, remap(selected.path));
+          const compared = this.comparisonSolutions.get(tabKey);
+          if (remaining.length < 2) this.comparisonSolutions.delete(tabKey);
+          else if (compared === tab.path || compared === selected.path) {
+            this.comparisonSolutions.set(tabKey, remap(remaining.find((item) => item !== selected).path));
+          } else if (typeof compared === "string") this.comparisonSolutions.set(tabKey, remap(compared));
+          this.renderKey = null;
+          await this.refresh();
+          this.pageHost.querySelectorAll("details.buches-solution").forEach((disclosure) => {
+            if (disclosure.dataset.stateKey === tabKey) disclosure.querySelector('.buches-solution-tabs [aria-pressed="true"]')?.focus();
+          });
+        };
         const addSolutionButton = (tab) => {
+          const wrapper = tabBar.createDiv({ cls: "buches-solution-tab" });
           const button = addTabButton(tab.title, async () => {
             if (tab === active) return;
             await saveCurrent();
             await changeTab(tab.path);
           });
           button.setAttribute("aria-pressed", String(tab === active));
+          wrapper.append(button);
           const firstAction = tabBar.querySelector(".buches-solution-tab-add");
-          if (firstAction) tabBar.insertBefore(button, firstAction);
+          if (firstAction) tabBar.insertBefore(wrapper, firstAction);
+          const label = `Delete ${tab.title} tab`;
+          const remove = solutionButton(wrapper, "x", label);
+          remove.classList.add("buches-solution-tab-delete");
+          remove.addEventListener("click", async () => {
+            remove.disabled = true;
+            try {
+              await removeTab(tab);
+            } catch (error) {
+              this.plugin.report(error, "Could not delete the solution tab.");
+            } finally {
+              remove.disabled = false;
+            }
+          });
         };
         for (const tab of tabs) addSolutionButton(tab);
-        const createTab = async (kind) => {
+        tabBar.classList.toggle("has-alternatives", tabs.length > 1);
+        const createTab = async (kind2) => {
           await saveCurrent();
-          return appendSolutionTab(this.plugin, file, model.book, unit, kind, state.solutionMath);
+          return appendSolutionTab(this.plugin, file, model.book, unit, kind2, state.solutionMath);
         };
         addTabButton("+ Solution", async () => changeTab((await createTab("manual")).path), "buches-solution-tab-add");
         if (claudian(this.app)?.api?.version === 1) {
@@ -3460,6 +3534,7 @@ var require_reader = __commonJS({
                 const note = await appendSolutionTab(this.plugin, file, model.book, unit, "manual", state.solutionMath);
                 const tab = { path: note.path, kind: "manual", title: `Solution ${tabs.length + 1}` };
                 tabs.push(tab);
+                tabBar.classList.add("has-alternatives");
                 addSolutionButton(tab);
                 this.comparisonSolutions.set(tabKey, tab.path);
               } else {
@@ -3546,7 +3621,7 @@ var require_reader = __commonJS({
         const edit = solutionButton(tools, "pencil", "Edit solution");
         const grade = solutionButton(tools, "chart-no-axes-column", "Grade this solution");
         let embed;
-        let note = tab.path ? this.app.vault.getAbstractFileByPath(tab.path) : null;
+        let note = tab.path ? this.app.vault.getAbstractFileByPath(tab.path) : resolveEmbed(this.app, file, unit);
         let pending;
         let loaded = false;
         const ai = this.plugin.aiSolutions;
@@ -3738,7 +3813,7 @@ var require_book_mentions = __commonJS({
   "src/book-mentions.js"(exports2, module2) {
     var { listBuches } = require_catalog();
     var { stripFrontmatter } = require_intro_model();
-    var { primarySolution, resolveEmbed, solutionTabs } = require_solution_notes();
+    var { primarySolution, primaryKind, resolveEmbed, solutionTabs } = require_solution_notes();
     var fold = (text) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
     var validReference = (ref) => !/[\r\n|\]]/.test(ref);
     function createBookMentions(plugin) {
@@ -3791,7 +3866,7 @@ var require_book_mentions = __commonJS({
               if (primary || primarySolution(solution)) {
                 add(
                   primary?.path ?? fallback,
-                  title + " \xB7 Solution 1",
+                  title + (primaryKind(solution) === "ai" ? " \xB7 AI" : "") + " \xB7 Solution 1",
                   "solution",
                   () => primary ? fromNote(primary) : primarySolution(solution)
                 );

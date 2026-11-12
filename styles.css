@@ -874,3 +874,10 @@
     padding-block-start: 10px;
   }
 }
+
+.buches-solution-tab { display: inline-flex; align-items: center; }
+.buches-solution-tabs button.buches-solution-tab-delete { padding-inline: 4px; }
+.buches-solution-tabs:not(.has-alternatives) button.buches-solution-tab-delete { display: none; }
+@media (hover: hover) {
+  .buches-solution-tab:not(:hover, :focus-within) .buches-solution-tab-delete { opacity: 0; }
+}

@@ -7,7 +7,7 @@ const { iconFor, renderFileIcon } = require('./icons');
 const { countsFor, statusFor } = require('./progress');
 const { renderDashboard, renderBookProgress, renderDependencies, chapterLink, progressButton } = require('./dashboard');
 const { renderMarkdown } = require('./math');
-const { materializeSolution, appendSolutionTab, solutionTabs } = require('./solution-notes');
+const { materializeSolution, appendSolutionTab, solutionTabs, primaryKind, removeSolutionTab, resolveEmbed } = require('./solution-notes');
 const { claudian, studyActions } = require('./claudian');
 const { AiSolutionModal } = require('./ai-solutions');
 const { GradeModal, preserveLegacyReview } = require('./grading');
@@ -366,7 +366,8 @@ class BuchReader extends MarkdownView {
     setIcon(summary.createSpan({ cls: 'buches-solution-chevron', attr: { 'aria-hidden': 'true' } }), 'chevron-right');
     summary.createSpan({ cls: 'buches-solution-reveal', text: 'Reveal solution' });
     summary.createSpan({ cls: 'buches-solution-hide', text: 'Hide solution' });
-    const tabs = [{ path: '', title: 'Solution 1' }, ...solutionTabs(unit).map((tab, index) => ({
+    const kind = primaryKind(unit);
+    const tabs = [{ path: '', kind, title: kind === 'ai' ? 'AI · Solution 1' : 'Solution 1' }, ...solutionTabs(unit).map((tab, index) => ({
       ...tab, title: tab.kind === 'ai' ? `AI · Solution ${index + 2}` : `Solution ${index + 2}`,
     }))];
     const tabKey = details.dataset.stateKey;
@@ -402,17 +403,48 @@ class BuchReader extends MarkdownView {
       });
       return button;
     };
+    const removeTab = async tab => {
+      if (tabs.length < 2) return;
+      await saveCurrent();
+      const promoted = await removeSolutionTab(this.plugin, file, model.book, unit, tab.path, state.solutionMath);
+      const remap = path => path === promoted ? '' : path;
+      const remaining = tabs.filter(item => item !== tab);
+      const selected = active === tab ? remaining[Math.min(tabs.indexOf(tab), remaining.length - 1)] : active;
+      this.selectedSolutions.set(tabKey, remap(selected.path));
+      const compared = this.comparisonSolutions.get(tabKey);
+      if (remaining.length < 2) this.comparisonSolutions.delete(tabKey);
+      else if (compared === tab.path || compared === selected.path) {
+        this.comparisonSolutions.set(tabKey, remap(remaining.find(item => item !== selected).path));
+      } else if (typeof compared === 'string') this.comparisonSolutions.set(tabKey, remap(compared));
+      this.renderKey = null;
+      await this.refresh();
+      this.pageHost.querySelectorAll('details.buches-solution').forEach(disclosure => {
+        if (disclosure.dataset.stateKey === tabKey) disclosure.querySelector('.buches-solution-tabs [aria-pressed="true"]')?.focus();
+      });
+    };
     const addSolutionButton = tab => {
+      const wrapper = tabBar.createDiv({ cls: 'buches-solution-tab' });
       const button = addTabButton(tab.title, async () => {
         if (tab === active) return;
         await saveCurrent();
         await changeTab(tab.path);
       });
       button.setAttribute('aria-pressed', String(tab === active));
+      wrapper.append(button);
       const firstAction = tabBar.querySelector('.buches-solution-tab-add');
-      if (firstAction) tabBar.insertBefore(button, firstAction);
+      if (firstAction) tabBar.insertBefore(wrapper, firstAction);
+      const label = `Delete ${tab.title} tab`;
+      const remove = solutionButton(wrapper, 'x', label);
+      remove.classList.add('buches-solution-tab-delete');
+      remove.addEventListener('click', async () => {
+        remove.disabled = true;
+        try { await removeTab(tab); }
+        catch (error) { this.plugin.report(error, 'Could not delete the solution tab.'); }
+        finally { remove.disabled = false; }
+      });
     };
     for (const tab of tabs) addSolutionButton(tab);
+    tabBar.classList.toggle('has-alternatives', tabs.length > 1);
 
     const createTab = async kind => {
       await saveCurrent();
@@ -471,6 +503,7 @@ class BuchReader extends MarkdownView {
             const note = await appendSolutionTab(this.plugin, file, model.book, unit, 'manual', state.solutionMath);
             const tab = { path: note.path, kind: 'manual', title: `Solution ${tabs.length + 1}` };
             tabs.push(tab);
+            tabBar.classList.add('has-alternatives');
             addSolutionButton(tab);
             this.comparisonSolutions.set(tabKey, tab.path);
           } else {
@@ -556,7 +589,7 @@ class BuchReader extends MarkdownView {
     const edit = solutionButton(tools, 'pencil', 'Edit solution');
     const grade = solutionButton(tools, 'chart-no-axes-column', 'Grade this solution');
     let embed;
-    let note = tab.path ? this.app.vault.getAbstractFileByPath(tab.path) : null;
+    let note = tab.path ? this.app.vault.getAbstractFileByPath(tab.path) : resolveEmbed(this.app, file, unit);
     let pending;
     let loaded = false;
     const ai = this.plugin.aiSolutions;

@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { AiSolutions, solutionPrompt } = require('../src/ai-solutions');
-const { solutionTabs, primarySolution } = require('../src/solution-notes');
+const { solutionTabs, primarySolution, primaryKind, removeSolutionTab } = require('../src/solution-notes');
 
 test('saving an AI reply requires the matching request and preserves an intervening edit', async () => {
   let reply = 'Another response';
@@ -43,4 +43,32 @@ test('AI requests default to a short proof and send the chosen scope with the re
   const firstStep = solutionPrompt(file, exercise, 'Exercise text', 'Reindex the Leibniz formula.', 'first-step');
   assert.match(firstStep, /Writing style: First step only.*Stop before giving later steps/);
   assert.match(firstStep, /My instructions: Reindex the Leibniz formula\./);
+});
+
+test('deleting the primary tab promotes the AI tab and protects the last tab', async () => {
+  const chapter = { path: 'Buches/Book/concepts/Exercise.md' };
+  const original = { path: 'Buches/Book/_solutions/original.md' };
+  const ai = 'Buches/Book/_solutions/ai.md';
+  const manual = 'Buches/Book/_solutions/manual.md';
+  const marker = (kind, path) => '<!-- buches-solution-tab: ' + kind + ' -->\r\n![[' + path + ']]\r\n';
+  const prefix = 'Question\r\n---\r\n<!-- buches-added-solution -->\r\n';
+  const suffix = '---\r\nEnd\r\n';
+  let text = prefix + '![[' + original.path + ']]\r\n' + marker('ai', ai) + marker('manual', manual) + suffix;
+  const unit = () => ({ markdown: text.slice(prefix.length, -suffix.length), end: text.length - suffix.length, exercise: { id: '^exercise' } });
+  const plugin = {
+    solutionWrites: new Map(),
+    learning: { page: async () => ({ nodes: [{ id: '^exercise', type: 'exercise', solution: unit() }] }) },
+    app: {
+      vault: { read: async () => text, process: async (_, write) => { text = write(text); } },
+      workspace: { getLeavesOfType: () => [] },
+      metadataCache: { getFirstLinkpathDest: path => path === original.path ? original : { path } },
+    },
+  };
+  assert.equal(await removeSolutionTab(plugin, chapter, {}, unit(), '', 'mathjax'), ai);
+  assert.equal(primaryKind(unit()), 'ai');
+  assert.equal(primarySolution(unit()), '![[' + ai + ']]');
+  assert.deepEqual(solutionTabs(unit()).map(tab => tab.path), [manual]);
+  await removeSolutionTab(plugin, chapter, {}, unit(), manual, 'mathjax');
+  assert.equal(text, prefix + '<!-- buches-primary-ai -->\r\n![[' + ai + ']]\r\n' + suffix);
+  await assert.rejects(removeSolutionTab(plugin, chapter, {}, unit(), '', 'mathjax'), /at least one/);
 });

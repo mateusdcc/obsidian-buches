@@ -1,6 +1,6 @@
 const { listBuches } = require('./catalog');
 const { stripFrontmatter } = require('./intro-model');
-const { primarySolution, resolveEmbed, solutionTabs } = require('./solution-notes');
+const { primarySolution, primaryKind, resolveEmbed, solutionTabs } = require('./solution-notes');
 
 const fold = text => text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
 const validReference = ref => !/[\r\n|\]]/.test(ref);
@@ -55,7 +55,7 @@ function createBookMentions(plugin) {
           const primary = resolveEmbed(plugin.app, chapter.file, solution);
           const fallback = path + '#Bücher solution ' + id.replaceAll('#', ' ');
           if (primary || primarySolution(solution)) {
-            add(primary?.path ?? fallback, title + ' · Solution 1', 'solution',
+            add(primary?.path ?? fallback, title + (primaryKind(solution) === 'ai' ? ' · AI' : '') + ' · Solution 1', 'solution',
               () => primary ? fromNote(primary) : primarySolution(solution));
           }
           for (const [i, tab] of solutionTabs(solution).entries()) {
