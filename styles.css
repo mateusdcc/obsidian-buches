@@ -73,17 +73,17 @@
 .buches-view button.buches-title:focus-visible,
 .buches-view button.buches-icon-button:focus-visible { outline: 1px solid var(--interactive-accent); outline-offset: -1px; }
 
-:is(.buches-add, .buches-exercises) { opacity: 0; pointer-events: none; }
-.buches-tree-row:is(:hover, :focus-within) > :is(.buches-add, .buches-exercises) {
+:is(.buches-add, .buches-exercises, .buches-mark-done) { opacity: 0; pointer-events: none; }
+.buches-tree-row:is(:hover, :focus-within) > :is(.buches-add, .buches-exercises, .buches-mark-done) {
   opacity: 1;
   pointer-events: auto;
 }
 .buches-view button.buches-icon-button.buches-exercises:hover { color: var(--text-normal); }
 @media (hover: none) {
-  :is(.buches-add, .buches-exercises) { opacity: 1; pointer-events: auto; }
+  :is(.buches-add, .buches-exercises, .buches-mark-done) { opacity: 1; pointer-events: auto; }
 }
 @media (hover: hover) {
-  .buches-view .buches-tree-row:not(:hover, :focus-within) > :is(.buches-add, .buches-exercises) {
+  .buches-view .buches-tree-row:not(:hover, :focus-within) > :is(.buches-add, .buches-exercises, .buches-mark-done) {
     width: 0;
     padding: 0;
     overflow: hidden;
@@ -747,3 +747,22 @@
 }
 
 .buches-name-form .buches-claudian-context-option input { width: auto; }
+
+.buches-tree-progress {
+  display: grid;
+  place-items: center;
+  flex: 0 0 18px;
+  height: 20px;
+  color: var(--color-green);
+}
+
+.buches-tree-progress .svg-icon { width: 13px; height: 13px; }
+
+.buches-tree-progress-partial::before {
+  content: '';
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: conic-gradient(currentColor var(--buches-completion), var(--background-modifier-border) 0);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1.5px));
+}

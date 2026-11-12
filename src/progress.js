@@ -97,15 +97,23 @@ class BookProgress {
     });
   }
 
+  markRead(model, paths) {
+    return this.write(model.book, yaml => {
+      this.importLegacy(model, yaml);
+      for (const path of paths) {
+        const key = relative(model.book, path);
+        const row = yaml.chapters[key] ??= {};
+        row.read = true;
+      }
+    });
+  }
+
   set(model, target, done) {
+    if (target.type !== 'exercise') return this.markRead(model, [target.path]);
     return this.write(model.book, yaml => {
       this.importLegacy(model, yaml);
       const key = relative(model.book, target.path);
       const row = yaml.chapters[key] ??= {};
-      if (target.type !== 'exercise') {
-        row.read = true;
-        return;
-      }
       const entries = new Set(Array.isArray(row.solved) ? row.solved : []);
       if (done) entries.add(target.id);
       else entries.delete(target.id);

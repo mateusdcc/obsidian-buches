@@ -311,15 +311,15 @@ var require_catalog = __commonJS({
 var require_buch_model = __commonJS({
   "src/buch-model.js"(exports2, module2) {
     var { listBuches } = require_catalog();
-    function flattenConcepts(concepts) {
-      return concepts.flatMap((concept) => [concept, ...flattenConcepts(concept.children)]);
+    function flattenConcepts2(concepts) {
+      return concepts.flatMap((concept) => [concept, ...flattenConcepts2(concept.children)]);
     }
     function findBuchContext2(app, file) {
       if (!file || typeof file.path !== "string" || !file.path.startsWith("Buches/")) return null;
       const book = listBuches(app).find((item) => file.path.startsWith(`${item.path}/`));
       if (!book) return null;
       if (file.path === book.index.path) return { book, file: book.index, isIndex: true, name: book.title };
-      const concept = flattenConcepts(book.concepts).find((item) => item.file.path === file.path);
+      const concept = flattenConcepts2(book.concepts).find((item) => item.file.path === file.path);
       if (concept) return { book, file: concept.file, isIndex: false, name: concept.name, concept };
       const path = file.path;
       if (path === `${book.path}/_progress.md` || path.startsWith(`${book.path}/_solutions/`)) return null;
@@ -336,7 +336,7 @@ var require_buch_model = __commonJS({
       return link.split("|")[0].split("#")[0].trim() || null;
     }
     function buildGraph(app, book) {
-      const nodes = flattenConcepts(book.concepts).map((concept) => ({ file: concept.file, path: concept.file.path, name: concept.name }));
+      const nodes = flattenConcepts2(book.concepts).map((concept) => ({ file: concept.file, path: concept.file.path, name: concept.name }));
       const paths = new Set(nodes.map((node) => node.path));
       const edges = [];
       function addHierarchy(concepts) {
@@ -364,313 +364,7 @@ var require_buch_model = __commonJS({
       }
       return { nodes, edges };
     }
-    module2.exports = { flattenConcepts, findBuchContext: findBuchContext2, buildGraph };
-  }
-});
-
-// src/view.js
-var require_view = __commonJS({
-  "src/view.js"(exports2, module2) {
-    var { ItemView, setIcon, Menu } = require("obsidian");
-    var { renderFileIcon } = require_icons();
-    var { reorderSiblings } = require_order_model();
-    var { listBuches } = require_catalog();
-    var { flattenConcepts } = require_buch_model();
-    var VIEW_TYPE2 = "buches-navigator";
-    function iconButton(parent, icon, label, callback, extraClass = "") {
-      const button = parent.createEl("button", { cls: `buches-icon-button ${extraClass}` });
-      button.setAttribute("aria-label", label);
-      button.setAttribute("title", label);
-      setIcon(button, icon);
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        callback();
-      });
-      return button;
-    }
-    var BuchesView2 = class extends ItemView {
-      constructor(leaf, plugin) {
-        super(leaf);
-        this.plugin = plugin;
-        this.expansion = /* @__PURE__ */ new Map();
-        this.renderTimer = null;
-      }
-      getViewType() {
-        return VIEW_TYPE2;
-      }
-      getDisplayText() {
-        return "Buches";
-      }
-      getIcon() {
-        return "library";
-      }
-      async onOpen() {
-        this.contentEl.addClass("buches-view");
-        const schedule = (file) => {
-          if (!file || file.path === "Buches" || file.path.startsWith("Buches/")) this.scheduleRender();
-        };
-        for (const event of ["create", "delete", "modify"]) this.registerEvent(this.app.vault.on(event, schedule));
-        this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
-          if (oldPath === "Buches" || oldPath.startsWith("Buches/")) this.scheduleRender();
-          else schedule(file);
-        }));
-        this.registerEvent(this.app.metadataCache.on("changed", schedule));
-        this.registerEvent(this.app.workspace.on("file-open", () => this.scheduleRender()));
-        this.render();
-      }
-      async onClose() {
-        if (this.renderTimer !== null) clearTimeout(this.renderTimer);
-        this.renderTimer = null;
-      }
-      scheduleRender() {
-        if (this.renderTimer !== null) clearTimeout(this.renderTimer);
-        this.renderTimer = setTimeout(() => {
-          this.renderTimer = null;
-          this.render();
-        }, 100);
-      }
-      render() {
-        const container = this.contentEl;
-        container.empty();
-        const toolbar = container.createDiv({ cls: "buches-toolbar" });
-        toolbar.createEl("h4", { text: "Buches" });
-        iconButton(toolbar, "plus", "Create Buch", () => this.plugin.promptCreateBuch());
-        const books = listBuches(this.app);
-        if (!books.length) {
-          container.createEl("p", { cls: "buches-empty", text: "No Buches yet. Create one with the + button." });
-          return;
-        }
-        const list = container.createDiv({ cls: "buches-list" });
-        for (const book of books) this.renderBook(list, book);
-      }
-      renderToggle(row, path, name, defaultExpanded = false) {
-        const expanded = this.expansion.get(path) ?? defaultExpanded;
-        const toggle = iconButton(row, expanded ? "chevron-down" : "chevron-right", `${expanded ? "Collapse" : "Expand"} ${name}`, () => {
-          this.expansion.set(path, !expanded);
-          this.render();
-        }, "buches-toggle");
-        toggle.setAttribute("aria-expanded", String(expanded));
-        return expanded;
-      }
-      renderTitle(row, file, name, icon, cls, ariaLabel) {
-        const button = row.createEl("button", { cls });
-        button.setAttribute("aria-label", ariaLabel);
-        button.setAttribute("title", name);
-        const view = this.app.workspace?.getMostRecentLeaf?.()?.view;
-        if (!view?.sheet && this.app.workspace?.getActiveFile?.()?.path === file.path) button.setAttribute("aria-current", "page");
-        if (icon) {
-          const iconEl = button.createEl("span", { cls: "buches-file-icon" });
-          iconEl.setAttribute("aria-hidden", "true");
-          renderFileIcon(iconEl, icon, setIcon);
-        }
-        button.createEl("span", { cls: "buches-file-name", text: name });
-        button.addEventListener("click", () => this.plugin.openFile(file));
-        button.addEventListener("contextmenu", (event) => {
-          event.preventDefault();
-          const menu = new Menu();
-          menu.addItem((item) => item.setTitle("Set icon").setIcon("smile").onClick(() => this.plugin.promptIcon(file)));
-          menu.showAtMouseEvent(event);
-        });
-        return button;
-      }
-      renderExerciseButton(row, file, name) {
-        const button = iconButton(
-          row,
-          "clipboard-list",
-          `Exercises for ${name}`,
-          () => this.plugin.openExercises(file),
-          "buches-exercises"
-        );
-        const view = this.app.workspace?.getMostRecentLeaf?.()?.view;
-        if (view?.sheet && view.file?.path === file.path) button.setAttribute("aria-current", "page");
-      }
-      renderBook(parent, book) {
-        const section = parent.createDiv({ cls: "buches-book" });
-        const row = section.createDiv({ cls: "buches-tree-row buches-book-row" });
-        const expanded = this.renderToggle(row, book.path, book.title, true);
-        const bookmarkPath = this.plugin.lastRead?.get(book.path);
-        const bookmark = bookmarkPath && flattenConcepts(book.concepts).find((item) => item.file.path === bookmarkPath);
-        const title = this.renderTitle(row, book.index, book.title, book.icon, "buches-title", `Open ${book.title}`);
-        if (!expanded && bookmark) this.markReadingPosition(row, title, bookmark);
-        iconButton(row, "plus", `New concept in ${book.title}`, () => {
-          if (!expanded) {
-            this.expansion.set(book.path, true);
-            this.render();
-          }
-          this.plugin.promptCreateConcept(book.path);
-        }, "buches-add");
-        this.renderExerciseButton(row, book.index, book.title);
-        if (!expanded) return;
-        const concepts = section.createDiv({ cls: "buches-children" });
-        if (!book.concepts.length) concepts.createDiv({ cls: "buches-empty-concepts", text: "No concepts yet" });
-        for (const concept of book.concepts) this.renderConcept(concepts, concept, book, bookmark, true);
-      }
-      markReadingPosition(row, title, bookmark) {
-        const label = `\xDAltima leitura: ${bookmark.name}`;
-        row.addClass("buches-last-read");
-        title.setAttribute("title", label);
-        title.setAttribute("aria-description", label);
-      }
-      renderConcept(parent, concept, book, bookmark, topLevel = false) {
-        const section = parent.createDiv({ cls: "buches-node" });
-        const row = section.createDiv({ cls: "buches-tree-row buches-concept-row" });
-        row.setAttribute("draggable", "true");
-        row.addEventListener("dragstart", (event) => {
-          event.stopPropagation();
-          event.dataTransfer?.setData("text/plain", concept.file.path);
-          if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
-          row.addClass("is-dragging");
-        });
-        row.addEventListener("dragend", () => {
-          row.removeClass("is-dragging");
-          this.contentEl.querySelectorAll(".buches-tree-row").forEach((el) => {
-            el.removeClass("drag-over-before", "drag-over-after");
-          });
-        });
-        row.addEventListener("dragover", (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-          const rect = row.getBoundingClientRect();
-          const isBefore = event.clientY < rect.top + rect.height / 2;
-          row.toggleClass("drag-over-before", isBefore);
-          row.toggleClass("drag-over-after", !isBefore);
-        });
-        row.addEventListener("dragleave", () => {
-          row.removeClass("drag-over-before", "drag-over-after");
-        });
-        row.addEventListener("drop", async (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          row.removeClass("drag-over-before", "drag-over-after");
-          const sourcePath = event.dataTransfer?.getData("text/plain");
-          const targetPath = concept.file.path;
-          if (!sourcePath || sourcePath === targetPath) return;
-          const rect = row.getBoundingClientRect();
-          const position = event.clientY < rect.top + rect.height / 2 ? "before" : "after";
-          const reordered = await reorderSiblings(this.app, book, sourcePath, targetPath, position);
-          if (reordered) {
-            this.render();
-            this.plugin.scheduleRefresh();
-          }
-        });
-        const hasChildren = concept.children.length > 0;
-        const expanded = hasChildren && this.renderToggle(row, concept.file.path, concept.name);
-        if (!hasChildren) row.createEl("span", { cls: "buches-toggle-spacer" });
-        const icon = topLevel ? concept.icon || "book-open" : null;
-        const title = this.renderTitle(row, concept.file, concept.name, icon, "buches-title buches-concept", `Open concept ${concept.name}`);
-        const path = concept.file.path;
-        if (bookmark && (bookmark.file.path === path || !expanded && bookmark.file.path.startsWith(`${path.slice(0, -3)}/`))) {
-          this.markReadingPosition(row, title, bookmark);
-        }
-        iconButton(row, "plus", `New subconcept in ${concept.name}`, () => {
-          this.expansion.set(concept.file.path, true);
-          if (hasChildren && !expanded) this.render();
-          this.plugin.promptCreateSubconcept(concept.file.path);
-        }, "buches-add");
-        this.renderExerciseButton(row, concept.file, concept.name);
-        if (!hasChildren || !expanded) return;
-        const children = section.createDiv({ cls: "buches-children" });
-        for (const child of concept.children) this.renderConcept(children, child, book, bookmark);
-      }
-    };
-    module2.exports = { BuchesView: BuchesView2, VIEW_TYPE: VIEW_TYPE2 };
-  }
-});
-
-// src/graph-layout.js
-var require_graph_layout = __commonJS({
-  "src/graph-layout.js"(exports2, module2) {
-    function graphLayout(nodes, width, height) {
-      const positions = /* @__PURE__ */ new Map();
-      const count = nodes.length;
-      const cx = width / 2, cy = height / 2;
-      for (let i = 0; i < count; i++) {
-        if (count === 1) {
-          positions.set(nodes[i].path, { x: cx, y: cy });
-          continue;
-        }
-        const angle = i * Math.PI * (3 - Math.sqrt(5));
-        const radius = Math.sqrt((i + 0.7) / count) * 0.83;
-        const width2 = Math.max(0, cx - 14), height2 = Math.max(0, cy - 14);
-        positions.set(nodes[i].path, {
-          x: cx + Math.cos(angle) * radius * width2,
-          y: cy + Math.sin(angle) * radius * height2
-        });
-      }
-      return positions;
-    }
-    module2.exports = { graphLayout };
-  }
-});
-
-// src/graph-view.js
-var require_graph_view = __commonJS({
-  "src/graph-view.js"(exports2, module2) {
-    var { graphLayout } = require_graph_layout();
-    var SVG = "http://www.w3.org/2000/svg";
-    function renderGraph(container, graph, currentPath, openFile, isDone = () => false) {
-      if (!graph.nodes.length) {
-        container.createEl("p", { cls: "buches-context-empty", text: "No concepts yet." });
-        return;
-      }
-      const doc = container.ownerDocument;
-      const svg = doc.createElementNS(SVG, "svg");
-      svg.setAttribute("viewBox", "0 0 320 165");
-      svg.setAttribute("class", "buches-graph");
-      svg.setAttribute("role", "group");
-      svg.setAttribute("aria-label", "Concept dependency graph");
-      const positions = graphLayout(graph.nodes, 320, 165);
-      for (const edge of graph.edges) {
-        const source = positions.get(edge.source), target = positions.get(edge.target);
-        if (!source || !target) continue;
-        const line = doc.createElementNS(SVG, "line");
-        for (const [key, value] of Object.entries({ x1: source.x, y1: source.y, x2: target.x, y2: target.y })) line.setAttribute(key, String(value));
-        line.setAttribute("class", `buches-graph-edge is-${edge.type}`);
-        const tooltip = doc.createElementNS(SVG, "title");
-        const sourceName = graph.nodes.find((node) => node.path === edge.source)?.name ?? edge.source;
-        const targetName = graph.nodes.find((node) => node.path === edge.target)?.name ?? edge.target;
-        tooltip.textContent = edge.type === "dependency" ? `${sourceName} depends on ${targetName}` : edge.type === "hierarchy" ? `${targetName} is nested under ${sourceName}` : `${sourceName} links to ${targetName}`;
-        line.appendChild(tooltip);
-        svg.appendChild(line);
-      }
-      for (const node of graph.nodes) {
-        const point = positions.get(node.path);
-        const group = doc.createElementNS(SVG, "g");
-        group.setAttribute("class", `buches-graph-node${node.path === currentPath ? " is-current" : ""}${isDone(node) ? " is-mastered" : ""}`);
-        group.setAttribute("role", "button");
-        group.setAttribute("tabindex", "0");
-        group.setAttribute("aria-label", `Open concept ${node.name}`);
-        const title = doc.createElementNS(SVG, "title");
-        title.textContent = node.name;
-        group.appendChild(title);
-        const circle = doc.createElementNS(SVG, "circle");
-        circle.setAttribute("cx", String(point.x));
-        circle.setAttribute("cy", String(point.y));
-        circle.setAttribute("r", "4.5");
-        group.appendChild(circle);
-        group.addEventListener("click", () => openFile(node.file));
-        group.addEventListener("keydown", (event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            openFile(node.file);
-          }
-        });
-        svg.appendChild(group);
-      }
-      container.appendChild(svg);
-    }
-    module2.exports = { renderGraph };
-  }
-});
-
-// src/outline-model.js
-var require_outline_model = __commonJS({
-  "src/outline-model.js"(exports2, module2) {
-    function outlineFor(app, file) {
-      return (app.metadataCache.getFileCache(file)?.headings ?? []).map((heading) => ({ text: heading.heading, level: heading.level, line: heading.position?.start?.line ?? 0 }));
-    }
-    module2.exports = { outlineFor };
+    module2.exports = { flattenConcepts: flattenConcepts2, findBuchContext: findBuchContext2, buildGraph };
   }
 });
 
@@ -776,16 +470,24 @@ ${stringifyYaml(yaml).trimEnd()}
           return state;
         });
       }
+      markRead(model, paths) {
+        return this.write(model.book, (yaml) => {
+          var _a;
+          this.importLegacy(model, yaml);
+          for (const path of paths) {
+            const key = relative(model.book, path);
+            const row = (_a = yaml.chapters)[key] ?? (_a[key] = {});
+            row.read = true;
+          }
+        });
+      }
       set(model, target, done) {
+        if (target.type !== "exercise") return this.markRead(model, [target.path]);
         return this.write(model.book, (yaml) => {
           var _a;
           this.importLegacy(model, yaml);
           const key = relative(model.book, target.path);
           const row = (_a = yaml.chapters)[key] ?? (_a[key] = {});
-          if (target.type !== "exercise") {
-            row.read = true;
-            return;
-          }
           const entries = new Set(Array.isArray(row.solved) ? row.solved : []);
           if (done) entries.add(target.id);
           else entries.delete(target.id);
@@ -823,6 +525,378 @@ ${stringifyYaml(yaml).trimEnd()}
       }
     };
     module2.exports = { BookProgress: BookProgress2, PROGRESS_NAME, countsFor, statusFor: statusFor2 };
+  }
+});
+
+// src/view.js
+var require_view = __commonJS({
+  "src/view.js"(exports2, module2) {
+    var { ItemView, setIcon, Menu, Notice: Notice2 } = require("obsidian");
+    var { renderFileIcon } = require_icons();
+    var { reorderSiblings } = require_order_model();
+    var { listBuches } = require_catalog();
+    var { flattenConcepts: flattenConcepts2 } = require_buch_model();
+    var { statusFor: statusFor2 } = require_progress();
+    var VIEW_TYPE2 = "buches-navigator";
+    function iconButton(parent, icon, label, callback, extraClass = "") {
+      const button = parent.createEl("button", { cls: `buches-icon-button ${extraClass}` });
+      button.setAttribute("aria-label", label);
+      button.setAttribute("title", label);
+      setIcon(button, icon);
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        return callback();
+      });
+      return button;
+    }
+    var BuchesView2 = class extends ItemView {
+      constructor(leaf, plugin) {
+        super(leaf);
+        this.plugin = plugin;
+        this.expansion = /* @__PURE__ */ new Map();
+        this.renderRevision = 0;
+        this.renderTimer = null;
+      }
+      getViewType() {
+        return VIEW_TYPE2;
+      }
+      getDisplayText() {
+        return "Buches";
+      }
+      getIcon() {
+        return "library";
+      }
+      async onOpen() {
+        this.contentEl.addClass("buches-view");
+        const schedule = (file) => {
+          if (!file || file.path === "Buches" || file.path.startsWith("Buches/")) this.scheduleRender();
+        };
+        for (const event of ["create", "delete", "modify"]) this.registerEvent(this.app.vault.on(event, schedule));
+        this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+          if (oldPath === "Buches" || oldPath.startsWith("Buches/")) this.scheduleRender();
+          else schedule(file);
+        }));
+        this.registerEvent(this.app.metadataCache.on("changed", schedule));
+        this.registerEvent(this.app.workspace.on("file-open", () => this.scheduleRender()));
+        this.render();
+      }
+      async onClose() {
+        if (this.renderTimer !== null) clearTimeout(this.renderTimer);
+        this.renderTimer = null;
+        this.renderRevision += 1;
+      }
+      scheduleRender() {
+        if (this.renderTimer !== null) clearTimeout(this.renderTimer);
+        this.renderTimer = setTimeout(() => {
+          this.renderTimer = null;
+          this.render();
+        }, 100);
+      }
+      render() {
+        const container = this.contentEl;
+        this.renderRevision += 1;
+        container.empty();
+        const toolbar = container.createDiv({ cls: "buches-toolbar" });
+        toolbar.createEl("h4", { text: "Buches" });
+        iconButton(toolbar, "plus", "Create Buch", () => this.plugin.promptCreateBuch());
+        const books = listBuches(this.app);
+        if (!books.length) {
+          container.createEl("p", { cls: "buches-empty", text: "No Buches yet. Create one with the + button." });
+          return;
+        }
+        const list = container.createDiv({ cls: "buches-list" });
+        for (const book of books) this.renderBook(list, book);
+      }
+      renderToggle(row, path, name, defaultExpanded = false) {
+        const expanded = this.expansion.get(path) ?? defaultExpanded;
+        const toggle = iconButton(row, expanded ? "chevron-down" : "chevron-right", `${expanded ? "Collapse" : "Expand"} ${name}`, () => {
+          this.expansion.set(path, !expanded);
+          this.render();
+        }, "buches-toggle");
+        toggle.setAttribute("aria-expanded", String(expanded));
+        return expanded;
+      }
+      renderTitle(row, file, name, icon, cls, ariaLabel) {
+        const button = row.createEl("button", { cls });
+        button.setAttribute("aria-label", ariaLabel);
+        button.setAttribute("title", name);
+        const view = this.app.workspace?.getMostRecentLeaf?.()?.view;
+        if (!view?.sheet && this.app.workspace?.getActiveFile?.()?.path === file.path) button.setAttribute("aria-current", "page");
+        if (icon) {
+          const iconEl = button.createEl("span", { cls: "buches-file-icon" });
+          iconEl.setAttribute("aria-hidden", "true");
+          renderFileIcon(iconEl, icon, setIcon);
+        }
+        button.createEl("span", { cls: "buches-file-name", text: name });
+        button.addEventListener("click", () => this.plugin.openFile(file));
+        button.addEventListener("contextmenu", (event) => {
+          event.preventDefault();
+          const menu = new Menu();
+          menu.addItem((item) => item.setTitle("Set icon").setIcon("smile").onClick(() => this.plugin.promptIcon(file)));
+          menu.showAtMouseEvent(event);
+        });
+        return button;
+      }
+      renderExerciseButton(row, file, name) {
+        const button = iconButton(
+          row,
+          "clipboard-list",
+          `Exercises for ${name}`,
+          () => this.plugin.openExercises(file),
+          "buches-exercises"
+        );
+        const view = this.app.workspace?.getMostRecentLeaf?.()?.view;
+        if (view?.sheet && view.file?.path === file.path) button.setAttribute("aria-current", "page");
+      }
+      renderBook(parent, book) {
+        const section = parent.createDiv({ cls: "buches-book" });
+        const row = section.createDiv({ cls: "buches-tree-row buches-book-row" });
+        const expanded = this.renderToggle(row, book.path, book.title, true);
+        const bookmarkPath = this.plugin.lastRead?.get(book.path);
+        const bookmark = bookmarkPath && flattenConcepts2(book.concepts).find((item) => item.file.path === bookmarkPath);
+        const title = this.renderTitle(row, book.index, book.title, book.icon, "buches-title", `Open ${book.title}`);
+        if (!expanded && bookmark) this.markReadingPosition(row, title, bookmark);
+        iconButton(row, "plus", `New concept in ${book.title}`, () => {
+          if (!expanded) {
+            this.expansion.set(book.path, true);
+            this.render();
+          }
+          this.plugin.promptCreateConcept(book.path);
+        }, "buches-add");
+        this.renderExerciseButton(row, book.index, book.title);
+        if (!expanded) return;
+        const concepts = section.createDiv({ cls: "buches-children" });
+        if (!book.concepts.length) concepts.createDiv({ cls: "buches-empty-concepts", text: "No concepts yet" });
+        const rows = /* @__PURE__ */ new Map();
+        for (const concept of book.concepts) this.renderConcept(concepts, concept, book, bookmark, rows, true);
+        if (rows.size && this.plugin.progress) void this.renderProgress(book, rows, this.renderRevision);
+      }
+      async renderProgress(book, rows, revision) {
+        const model = { book, chapters: [] };
+        let progress;
+        try {
+          progress = await this.plugin.progress.read(model);
+        } catch (error) {
+          console.error("Could not load B\xFCcher reading progress:", error);
+          return;
+        }
+        if (revision !== this.renderRevision) return;
+        const measure = (concept) => {
+          const read = statusFor2(model, progress, { path: concept.file.path });
+          let done = read ? 1 : 0;
+          let total = 1;
+          if (concept.children.length) {
+            done = 0;
+            total = 0;
+            for (const child of concept.children) {
+              const count = measure(child);
+              done += count.done;
+              total += count.total;
+            }
+          }
+          const row = rows.get(concept);
+          if (row) this.decorateProgress(row, book, concept, read, done, total);
+          return { done, total };
+        };
+        for (const concept of book.concepts) measure(concept);
+      }
+      decorateProgress(row, book, concept, read, done, total) {
+        const complete = done === total;
+        if (!complete || !read) {
+          const label2 = concept.children.length && !complete ? `Mark ${concept.name} and its subtopics as done` : `Mark ${concept.name} as done`;
+          const button = iconButton(row, "check", label2, async () => {
+            button.disabled = true;
+            try {
+              await this.plugin.markConceptDone(book, concept);
+              this.scheduleRender();
+            } catch (error) {
+              new Notice2(error.message || "Could not mark the concept as done.");
+            } finally {
+              button.disabled = false;
+            }
+          }, "buches-mark-done");
+          row.insertBefore(button, row.querySelector(".buches-exercises"));
+        }
+        if (!done) return;
+        const badge = row.createEl("span", { cls: "buches-tree-progress" });
+        const percentage = complete ? 100 : Math.min(99, Math.max(1, Math.round(done / total * 100)));
+        const label = `${concept.name}: ${percentage}% done`;
+        badge.setAttribute("title", label);
+        badge.setAttribute("role", "img");
+        badge.setAttribute("aria-label", label);
+        if (complete) setIcon(badge, "check");
+        else {
+          badge.addClass("buches-tree-progress-partial");
+          badge.style.setProperty("--buches-completion", `${done / total * 100}%`);
+        }
+      }
+      markReadingPosition(row, title, bookmark) {
+        const label = `\xDAltima leitura: ${bookmark.name}`;
+        row.addClass("buches-last-read");
+        title.setAttribute("title", label);
+        title.setAttribute("aria-description", label);
+      }
+      renderConcept(parent, concept, book, bookmark, rows, topLevel = false) {
+        const section = parent.createDiv({ cls: "buches-node" });
+        const row = section.createDiv({ cls: "buches-tree-row buches-concept-row" });
+        rows.set(concept, row);
+        row.setAttribute("draggable", "true");
+        row.addEventListener("dragstart", (event) => {
+          event.stopPropagation();
+          event.dataTransfer?.setData("text/plain", concept.file.path);
+          if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+          row.addClass("is-dragging");
+        });
+        row.addEventListener("dragend", () => {
+          row.removeClass("is-dragging");
+          this.contentEl.querySelectorAll(".buches-tree-row").forEach((el) => {
+            el.removeClass("drag-over-before", "drag-over-after");
+          });
+        });
+        row.addEventListener("dragover", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+          const rect = row.getBoundingClientRect();
+          const isBefore = event.clientY < rect.top + rect.height / 2;
+          row.toggleClass("drag-over-before", isBefore);
+          row.toggleClass("drag-over-after", !isBefore);
+        });
+        row.addEventListener("dragleave", () => {
+          row.removeClass("drag-over-before", "drag-over-after");
+        });
+        row.addEventListener("drop", async (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          row.removeClass("drag-over-before", "drag-over-after");
+          const sourcePath = event.dataTransfer?.getData("text/plain");
+          const targetPath = concept.file.path;
+          if (!sourcePath || sourcePath === targetPath) return;
+          const rect = row.getBoundingClientRect();
+          const position = event.clientY < rect.top + rect.height / 2 ? "before" : "after";
+          const reordered = await reorderSiblings(this.app, book, sourcePath, targetPath, position);
+          if (reordered) {
+            this.render();
+            this.plugin.scheduleRefresh();
+          }
+        });
+        const hasChildren = concept.children.length > 0;
+        const expanded = hasChildren && this.renderToggle(row, concept.file.path, concept.name);
+        if (!hasChildren) row.createEl("span", { cls: "buches-toggle-spacer" });
+        const icon = topLevel ? concept.icon || "book-open" : null;
+        const title = this.renderTitle(row, concept.file, concept.name, icon, "buches-title buches-concept", `Open concept ${concept.name}`);
+        const path = concept.file.path;
+        if (bookmark && (bookmark.file.path === path || !expanded && bookmark.file.path.startsWith(`${path.slice(0, -3)}/`))) {
+          this.markReadingPosition(row, title, bookmark);
+        }
+        iconButton(row, "plus", `New subconcept in ${concept.name}`, () => {
+          this.expansion.set(concept.file.path, true);
+          if (hasChildren && !expanded) this.render();
+          this.plugin.promptCreateSubconcept(concept.file.path);
+        }, "buches-add");
+        this.renderExerciseButton(row, concept.file, concept.name);
+        if (!hasChildren || !expanded) return;
+        const children = section.createDiv({ cls: "buches-children" });
+        for (const child of concept.children) this.renderConcept(children, child, book, bookmark, rows);
+      }
+    };
+    module2.exports = { BuchesView: BuchesView2, VIEW_TYPE: VIEW_TYPE2 };
+  }
+});
+
+// src/graph-layout.js
+var require_graph_layout = __commonJS({
+  "src/graph-layout.js"(exports2, module2) {
+    function graphLayout(nodes, width, height) {
+      const positions = /* @__PURE__ */ new Map();
+      const count = nodes.length;
+      const cx = width / 2, cy = height / 2;
+      for (let i = 0; i < count; i++) {
+        if (count === 1) {
+          positions.set(nodes[i].path, { x: cx, y: cy });
+          continue;
+        }
+        const angle = i * Math.PI * (3 - Math.sqrt(5));
+        const radius = Math.sqrt((i + 0.7) / count) * 0.83;
+        const width2 = Math.max(0, cx - 14), height2 = Math.max(0, cy - 14);
+        positions.set(nodes[i].path, {
+          x: cx + Math.cos(angle) * radius * width2,
+          y: cy + Math.sin(angle) * radius * height2
+        });
+      }
+      return positions;
+    }
+    module2.exports = { graphLayout };
+  }
+});
+
+// src/graph-view.js
+var require_graph_view = __commonJS({
+  "src/graph-view.js"(exports2, module2) {
+    var { graphLayout } = require_graph_layout();
+    var SVG = "http://www.w3.org/2000/svg";
+    function renderGraph(container, graph, currentPath, openFile, isDone = () => false) {
+      if (!graph.nodes.length) {
+        container.createEl("p", { cls: "buches-context-empty", text: "No concepts yet." });
+        return;
+      }
+      const doc = container.ownerDocument;
+      const svg = doc.createElementNS(SVG, "svg");
+      svg.setAttribute("viewBox", "0 0 320 165");
+      svg.setAttribute("class", "buches-graph");
+      svg.setAttribute("role", "group");
+      svg.setAttribute("aria-label", "Concept dependency graph");
+      const positions = graphLayout(graph.nodes, 320, 165);
+      for (const edge of graph.edges) {
+        const source = positions.get(edge.source), target = positions.get(edge.target);
+        if (!source || !target) continue;
+        const line = doc.createElementNS(SVG, "line");
+        for (const [key, value] of Object.entries({ x1: source.x, y1: source.y, x2: target.x, y2: target.y })) line.setAttribute(key, String(value));
+        line.setAttribute("class", `buches-graph-edge is-${edge.type}`);
+        const tooltip = doc.createElementNS(SVG, "title");
+        const sourceName = graph.nodes.find((node) => node.path === edge.source)?.name ?? edge.source;
+        const targetName = graph.nodes.find((node) => node.path === edge.target)?.name ?? edge.target;
+        tooltip.textContent = edge.type === "dependency" ? `${sourceName} depends on ${targetName}` : edge.type === "hierarchy" ? `${targetName} is nested under ${sourceName}` : `${sourceName} links to ${targetName}`;
+        line.appendChild(tooltip);
+        svg.appendChild(line);
+      }
+      for (const node of graph.nodes) {
+        const point = positions.get(node.path);
+        const group = doc.createElementNS(SVG, "g");
+        group.setAttribute("class", `buches-graph-node${node.path === currentPath ? " is-current" : ""}${isDone(node) ? " is-mastered" : ""}`);
+        group.setAttribute("role", "button");
+        group.setAttribute("tabindex", "0");
+        group.setAttribute("aria-label", `Open concept ${node.name}`);
+        const title = doc.createElementNS(SVG, "title");
+        title.textContent = node.name;
+        group.appendChild(title);
+        const circle = doc.createElementNS(SVG, "circle");
+        circle.setAttribute("cx", String(point.x));
+        circle.setAttribute("cy", String(point.y));
+        circle.setAttribute("r", "4.5");
+        group.appendChild(circle);
+        group.addEventListener("click", () => openFile(node.file));
+        group.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openFile(node.file);
+          }
+        });
+        svg.appendChild(group);
+      }
+      container.appendChild(svg);
+    }
+    module2.exports = { renderGraph };
+  }
+});
+
+// src/outline-model.js
+var require_outline_model = __commonJS({
+  "src/outline-model.js"(exports2, module2) {
+    function outlineFor(app, file) {
+      return (app.metadataCache.getFileCache(file)?.headings ?? []).map((heading) => ({ text: heading.heading, level: heading.level, line: heading.position?.start?.line ?? 0 }));
+    }
+    module2.exports = { outlineFor };
   }
 });
 
@@ -1659,7 +1733,7 @@ ${unit.markdown}`;
 var require_study_context = __commonJS({
   "src/study-context.js"(exports2, module2) {
     var { listBuches } = require_catalog();
-    var { flattenConcepts } = require_buch_model();
+    var { flattenConcepts: flattenConcepts2 } = require_buch_model();
     var { statusFor: statusFor2 } = require_progress();
     var stopwords = new Set("como qual quais quando sobre para pode esse essa isso este esta isto nota livro definicao the that with what when from this does about".split(" "));
     function terms(text) {
@@ -1678,7 +1752,7 @@ var require_study_context = __commonJS({
       const books = listBuches(plugin.app);
       const matches = [];
       for (const book of books) {
-        const chapters = flattenConcepts(book.concepts);
+        const chapters = flattenConcepts2(book.concepts);
         const progress = await plugin.progress.read(book.path === model.book.path ? model : { book, chapters: [] }).catch(() => ({}));
         for (const { file: note, name } of chapters) {
           const path = note.path;
@@ -1921,7 +1995,7 @@ ${item.text}`)
 var require_reader = __commonJS({
   "src/reader.js"(exports2, module2) {
     var { Component, MarkdownView, Keymap, setIcon } = require("obsidian");
-    var { findBuchContext: findBuchContext2, flattenConcepts } = require_buch_model();
+    var { findBuchContext: findBuchContext2, flattenConcepts: flattenConcepts2 } = require_buch_model();
     var { getIntroduction } = require_intro_model();
     var { getPagination } = require_order_model();
     var { renderPagination, withFinish } = require_pagination();
@@ -2196,7 +2270,7 @@ var require_reader = __commonJS({
       }
       async renderExerciseSheet(body, context, state) {
         const { model, progress } = state;
-        const chapters = context.isIndex ? model.chapters : context.concept ? flattenConcepts([context.concept]).map((concept) => model.byPath.get(concept.file.path)) : [];
+        const chapters = context.isIndex ? model.chapters : context.concept ? flattenConcepts2([context.concept]).map((concept) => model.byPath.get(concept.file.path)) : [];
         let number = 0;
         for (const chapter of chapters) {
           const exercises = chapter.nodes.filter((node) => node.type === "exercise");
@@ -2464,7 +2538,7 @@ var require_learning = __commonJS({
   "src/learning.js"(exports2, module2) {
     var { stripFrontmatter } = require_intro_model();
     var { dividerLines } = require_resolution();
-    var { flattenConcepts } = require_buch_model();
+    var { flattenConcepts: flattenConcepts2 } = require_buch_model();
     var LEARNING_TYPES = /* @__PURE__ */ new Set(["definition", "theorem", "lemma", "proposition", "corollary", "example", "exercise"]);
     var SOLUTION_ENGINE = /^<!-- buches-math: (mathjax|typst) -->[ \t]*(?:\r?\n|$)/;
     function sourceParts(text) {
@@ -2586,7 +2660,7 @@ var require_learning = __commonJS({
         return page;
       }
       async book(book) {
-        const chapters = await Promise.all(flattenConcepts(book.concepts).map(async (concept) => ({
+        const chapters = await Promise.all(flattenConcepts2(book.concepts).map(async (concept) => ({
           ...concept,
           ...await this.page(concept.file),
           path: concept.file.path,
@@ -2659,7 +2733,7 @@ var { NameModal } = require_name_modal();
 var { BuchesView, VIEW_TYPE } = require_view();
 var { iconFor, setFileIcon } = require_icons();
 var { ContextView, CONTEXT_VIEW } = require_context_view();
-var { findBuchContext } = require_buch_model();
+var { findBuchContext, flattenConcepts } = require_buch_model();
 var { TabTitles } = require_tab_titles();
 var { IntroductionRenderer } = require_introduction();
 var { PaginationRenderer } = require_pagination();
@@ -2931,6 +3005,12 @@ var BuchesPlugin = class extends Plugin {
       lastRead: Object.fromEntries(this.lastRead)
     })).catch((error) => this.report(error, "Could not save B\xFCcher preferences."));
     return this.settingsSave;
+  }
+  async markConceptDone(book, concept) {
+    const model = await this.learning.book(book);
+    const paths = flattenConcepts([concept]).map((item) => item.file.path);
+    await this.progress.markRead(model, paths);
+    this.scheduleRefresh();
   }
   async learn(model, target, done) {
     try {

@@ -1,8 +1,9 @@
-const { ItemView, setIcon, Menu } = require('obsidian');
+const { ItemView, setIcon, Menu, Notice } = require('obsidian');
 const { renderFileIcon } = require('./icons');
 const { reorderSiblings } = require('./order-model');
 const { listBuches } = require('./catalog');
 const { flattenConcepts } = require('./buch-model');
+const { statusFor } = require('./progress');
 const VIEW_TYPE = 'buches-navigator';
 
 function iconButton(parent, icon, label, callback, extraClass = '') {
@@ -10,7 +11,7 @@ function iconButton(parent, icon, label, callback, extraClass = '') {
   button.setAttribute('aria-label', label);
   button.setAttribute('title', label);
   setIcon(button, icon);
-  button.addEventListener('click', event => { event.stopPropagation(); callback(); });
+  button.addEventListener('click', event => { event.stopPropagation(); return callback(); });
   return button;
 }
 
@@ -19,6 +20,7 @@ class BuchesView extends ItemView {
     super(leaf);
     this.plugin = plugin;
     this.expansion = new Map();
+    this.renderRevision = 0;
     this.renderTimer = null;
   }
   getViewType() { return VIEW_TYPE; }
@@ -42,6 +44,7 @@ class BuchesView extends ItemView {
   async onClose() {
     if (this.renderTimer !== null) clearTimeout(this.renderTimer);
     this.renderTimer = null;
+    this.renderRevision += 1;
   }
   scheduleRender() {
     if (this.renderTimer !== null) clearTimeout(this.renderTimer);
@@ -49,6 +52,7 @@ class BuchesView extends ItemView {
   }
   render() {
     const container = this.contentEl;
+    this.renderRevision += 1;
     container.empty();
     const toolbar = container.createDiv({ cls: 'buches-toolbar' });
     toolbar.createEl('h4', { text: 'Buches' });
@@ -116,7 +120,69 @@ class BuchesView extends ItemView {
     if (!expanded) return;
     const concepts = section.createDiv({ cls: 'buches-children' });
     if (!book.concepts.length) concepts.createDiv({ cls: 'buches-empty-concepts', text: 'No concepts yet' });
-    for (const concept of book.concepts) this.renderConcept(concepts, concept, book, bookmark, true);
+    const rows = new Map();
+    for (const concept of book.concepts) this.renderConcept(concepts, concept, book, bookmark, rows, true);
+    if (rows.size && this.plugin.progress) void this.renderProgress(book, rows, this.renderRevision);
+  }
+  async renderProgress(book, rows, revision) {
+    const model = { book, chapters: [] };
+    let progress;
+    try {
+      progress = await this.plugin.progress.read(model);
+    } catch (error) {
+      console.error('Could not load Bücher reading progress:', error);
+      return;
+    }
+    if (revision !== this.renderRevision) return;
+    const measure = concept => {
+      const read = statusFor(model, progress, { path: concept.file.path });
+      let done = read ? 1 : 0;
+      let total = 1;
+      if (concept.children.length) {
+        done = 0;
+        total = 0;
+        for (const child of concept.children) {
+          const count = measure(child);
+          done += count.done;
+          total += count.total;
+        }
+      }
+      const row = rows.get(concept);
+      if (row) this.decorateProgress(row, book, concept, read, done, total);
+      return { done, total };
+    };
+    for (const concept of book.concepts) measure(concept);
+  }
+  decorateProgress(row, book, concept, read, done, total) {
+    const complete = done === total;
+    if (!complete || !read) {
+      const label = concept.children.length && !complete
+        ? `Mark ${concept.name} and its subtopics as done` : `Mark ${concept.name} as done`;
+      const button = iconButton(row, 'check', label, async () => {
+        button.disabled = true;
+        try {
+          await this.plugin.markConceptDone(book, concept);
+          this.scheduleRender();
+        } catch (error) {
+          new Notice(error.message || 'Could not mark the concept as done.');
+        } finally {
+          button.disabled = false;
+        }
+      }, 'buches-mark-done');
+      row.insertBefore(button, row.querySelector('.buches-exercises'));
+    }
+    if (!done) return;
+    const badge = row.createEl('span', { cls: 'buches-tree-progress' });
+    const percentage = complete ? 100 : Math.min(99, Math.max(1, Math.round(done / total * 100)));
+    const label = `${concept.name}: ${percentage}% done`;
+    badge.setAttribute('title', label);
+    badge.setAttribute('role', 'img');
+    badge.setAttribute('aria-label', label);
+    if (complete) setIcon(badge, 'check');
+    else {
+      badge.addClass('buches-tree-progress-partial');
+      badge.style.setProperty('--buches-completion', `${done / total * 100}%`);
+    }
   }
   markReadingPosition(row, title, bookmark) {
     const label = `Última leitura: ${bookmark.name}`;
@@ -124,9 +190,10 @@ class BuchesView extends ItemView {
     title.setAttribute('title', label);
     title.setAttribute('aria-description', label);
   }
-  renderConcept(parent, concept, book, bookmark, topLevel = false) {
+  renderConcept(parent, concept, book, bookmark, rows, topLevel = false) {
     const section = parent.createDiv({ cls: 'buches-node' });
     const row = section.createDiv({ cls: 'buches-tree-row buches-concept-row' });
+    rows.set(concept, row);
     row.setAttribute('draggable', 'true');
     row.addEventListener('dragstart', event => {
       event.stopPropagation();
@@ -184,7 +251,7 @@ class BuchesView extends ItemView {
     this.renderExerciseButton(row, concept.file, concept.name);
     if (!hasChildren || !expanded) return;
     const children = section.createDiv({ cls: 'buches-children' });
-    for (const child of concept.children) this.renderConcept(children, child, book, bookmark);
+    for (const child of concept.children) this.renderConcept(children, child, book, bookmark, rows);
   }
 }
 module.exports = { BuchesView, VIEW_TYPE };

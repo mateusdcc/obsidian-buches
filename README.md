@@ -8,7 +8,7 @@ Turn a folder of Markdown notes into a book with ordered chapters, an exercise s
 
 ## Install
 
-1. Download `buches-0.3.0.zip` from the [GitHub release](https://github.com/mateusdcc/obsidian-buches/releases/latest).
+1. Download `buches-0.3.1.zip` from the [GitHub release](https://github.com/mateusdcc/obsidian-buches/releases/latest).
 2. Extract its `buches` folder into `<vault>/.obsidian/plugins/`. The folder should contain `main.js`, `manifest.json`, and `styles.css`.
 3. In Obsidian, enable **Bücher** under **Settings → Community plugins**. Click the library ribbon icon or run **Open Buches**.
 4. To try the sample, extract `demo-book.zip` into your vault, or copy the repository’s [demo/Buches](demo/Buches/) folder to the vault root. Keep your existing `Buches` folder if you already have one; copy only the sample book into it.

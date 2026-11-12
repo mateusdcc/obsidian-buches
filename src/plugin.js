@@ -4,7 +4,7 @@ const { NameModal } = require('./name-modal');
 const { BuchesView, VIEW_TYPE } = require('./view');
 const { iconFor, setFileIcon } = require('./icons');
 const { ContextView, CONTEXT_VIEW } = require('./context-view');
-const { findBuchContext } = require('./buch-model');
+const { findBuchContext, flattenConcepts } = require('./buch-model');
 const { TabTitles } = require('./tab-titles');
 const { IntroductionRenderer } = require('./introduction');
 const { PaginationRenderer } = require('./pagination');
@@ -239,6 +239,13 @@ class BuchesPlugin extends Plugin {
     })).catch(error => this.report(error, 'Could not save Bücher preferences.'));
     return this.settingsSave;
   }
+  async markConceptDone(book, concept) {
+    const model = await this.learning.book(book);
+    const paths = flattenConcepts([concept]).map(item => item.file.path);
+    await this.progress.markRead(model, paths);
+    this.scheduleRefresh();
+  }
+
   async learn(model, target, done) {
     try {
       await this.progress.set(model, target, done);
