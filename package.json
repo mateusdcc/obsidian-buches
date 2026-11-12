@@ -1,16 +1,17 @@
 {
   "name": "buches-obsidian-plugin",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "description": "A title-based Buch and concept navigator for Obsidian.",
   "scripts": {
     "test": "node --require ./test/setup.js --test test/*.test.js",
-    "build": "esbuild src/plugin.js --bundle --platform=node --format=cjs --target=es2020 --external:obsidian --outfile=main.js"
+    "build": "esbuild src/plugin.js --bundle --platform=node --format=cjs --target=es2020 --external:obsidian --loader:.md=text --outfile=main.js"
   },
   "devDependencies": {
     "esbuild": "0.25.12"
   },
   "dependencies": {
+    "minisearch": "^7.2.0",
     "monkey-around": "^2.3.0"
   }
 }

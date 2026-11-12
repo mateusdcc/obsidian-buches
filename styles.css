@@ -739,6 +739,7 @@
 
 .buches-claudian-scope:empty { display: none; }
 .buches-name-form textarea { width: 100%; resize: vertical; }
+.buches-ai-style { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--size-4-2); }
 
 .buches-claudian-context-option {
   display: flex;
@@ -819,3 +820,9 @@
   border-inline-start: 2px solid var(--interactive-accent);
   background: var(--background-secondary);
 }
+
+.buches-grade-pending > progress { display: block; width: 100%; margin-block: 8px 16px; }
+.buches-grade-analysis { margin-block: 12px; color: var(--text-muted); }
+.buches-grade-analysis summary { cursor: pointer; }
+
+.buches-live-analysis { white-space: pre-wrap; max-height: 14rem; overflow: auto; }

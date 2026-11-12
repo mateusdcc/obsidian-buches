@@ -9,7 +9,7 @@ const { renderDashboard, renderBookProgress, renderDependencies, chapterLink, pr
 const { renderMarkdown } = require('./math');
 const { materializeSolution, appendSolutionTab, solutionTabs } = require('./solution-notes');
 const { claudian, studyActions } = require('./claudian');
-const { NameModal } = require('./name-modal');
+const { AiSolutionModal } = require('./ai-solutions');
 const { GradeModal } = require('./grading');
 
 const READER_VIEW = 'buches-reader';
@@ -393,15 +393,10 @@ class BuchReader extends MarkdownView {
     if (claudian(this.app)?.api?.version === 1) {
       addTabButton('+ AI', () => {
         let created;
-        new NameModal(this.app, {
-          title: 'AI solution',
-          placeholder: 'Proof method or first step you want to see',
-          submitText: 'Ask Claudian',
-          onSubmit: async instructions => {
-            created ??= await createTab('ai');
-            try { await this.plugin.aiSolutions.ask(created, file, exercise, instructions); }
-            finally { await changeTab(created.path); }
-          },
+        new AiSolutionModal(this.app, async (instructions, style) => {
+          created ??= await createTab('ai');
+          try { await this.plugin.aiSolutions.ask(created, file, exercise, instructions, style, model); }
+          finally { await changeTab(created.path); }
         }).open();
       }, 'buches-solution-tab-add');
     }
@@ -414,9 +409,11 @@ class BuchReader extends MarkdownView {
     let pending;
     if (note && this.plugin.aiSolutions.isPending(note)) {
       const waiting = details.createDiv({ cls: 'buches-solution-waiting', attr: { role: 'status' } });
-      waiting.createSpan({ text: 'Waiting for Claudian…' });
-      waiting.createEl('button', { text: 'Stop waiting', attr: { type: 'button' } })
+      waiting.createSpan({ text: this.plugin.aiSolutions.taskStatus(note) });
+      waiting.createEl('button', { text: 'Cancel', attr: { type: 'button' } })
         .addEventListener('click', () => this.plugin.aiSolutions.cancel(note));
+    } else if (note && active.kind === 'ai' && this.plugin.aiSolutions.errors.has(note)) {
+      details.createDiv({ cls: 'buches-edit-error', text: this.plugin.aiSolutions.errors.get(note), attr: { role: 'status' } });
     }
     const ensureContent = (native = false) => pending ??= (async () => {
       this.solutionLoading = (this.solutionLoading ?? 0) + 1;

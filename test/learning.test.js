@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { sourceParts, parsePage, LearningIndex } = require('../src/learning');
-const { extractMath } = require('../src/math');
+const { extractMath, normalizeLatexDelimiters } = require('../src/math');
 
 test('solution offsets preserve CRLF, Unicode, and delimiters in code', async () => {
   const source = '---\r\nname: A\r\n---\r\n\r\n🧪 Prompt\r\n\r\n```md\r\n---\r\n```\r\n\r\n---\r\n<!-- buches-math: typst -->\r\n$sqrt(2)$\r\n---\r\n';
@@ -41,4 +41,21 @@ test('renderer isolation preserves literal math syntax in code and extracts both
   assert.match(markdown, /`\$x\$`/);
   assert.match(markdown, /```md\n\$z\$\n```/);
   assert.deepEqual(formulas.map(({ source, display }) => [source, display]), [['y', false], ['\nz^2\n', true]]);
+});
+
+
+test('MathJax reads and normalizes backslash delimiters without changing code or existing dollar math', () => {
+  const source = [String.raw`The sign is \(\operatorname{sgn}(\sigma)\), and $x$ is unchanged.`, '',
+    String.raw`\[`, String.raw`\begin{array}{cc} 1 & 2 \\ 3 & 4 \end{array}`, String.raw`\]`, '',
+    '`\\(code\\)`', '```md', String.raw`\[code\]`, '```', String.raw`\\[escaped\\]`].join('\n');
+  const extracted = extractMath(source);
+  const normalized = normalizeLatexDelimiters(source);
+  assert.deepEqual(extracted.formulas.map(({ source, display }) => [source, display]), [
+    [String.raw`\operatorname{sgn}(\sigma)`, false], ['x', false],
+    ['\n' + String.raw`\begin{array}{cc} 1 & 2 \\ 3 & 4 \end{array}` + '\n', true],
+  ]);
+  assert.equal(normalized, source.replace(String.raw`\(\operatorname{sgn}(\sigma)\)`, () => String.raw`$\operatorname{sgn}(\sigma)$`)
+    .replace('\\[\n', () => '$$\n').replace('\n\\]', () => '\n$$'));
+  assert.deepEqual(extractMath(normalized).formulas.map(formula => formula.source), extracted.formulas.map(formula => formula.source));
+  assert.deepEqual(extractMath(source, false).formulas.map(formula => formula.source), ['x']);
 });

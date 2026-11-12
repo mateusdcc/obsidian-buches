@@ -8,7 +8,7 @@ Turn a folder of Markdown notes into a book with ordered chapters, an exercise s
 
 ## Install
 
-1. Download `buches-0.4.0.zip` from the [GitHub release](https://github.com/mateusdcc/obsidian-buches/releases/latest).
+1. Download `buches-0.4.1.zip` from the [GitHub release](https://github.com/mateusdcc/obsidian-buches/releases/latest).
 2. Extract its `buches` folder into `<vault>/.obsidian/plugins/`. The folder should contain `main.js`, `manifest.json`, and `styles.css`.
 3. In Obsidian, enable **Bücher** under **Settings → Community plugins**. Click the library ribbon icon or run **Open Buches**.
 4. To try the sample, extract `demo-book.zip` into your vault, or copy the repository’s [demo/Buches](demo/Buches/) folder to the vault root. Keep your existing `Buches` folder if you already have one; copy only the sample book into it.
@@ -38,13 +38,13 @@ Under **Settings → Buches**, choose **Reader math** and the default **Solution
 
 ## Solution tabs
 
-Open **Reveal solution** and choose **+ Solution** to keep another attempt for the same exercise. **+ AI** appears when Claudian is enabled. Specify a proof method, or ask for just the first step. For example, request a proof of $\det(A^T)=\det(A)$ by reindexing the Leibniz formula.
+Open **Reveal solution** and choose **+ Solution** to keep another attempt for the same exercise. **+ AI** appears when Claudian is enabled. Choose **Concise** (the default), **Step by step**, **Proof sketch**, or **First step only**. You can add a method or constraint, such as “Prove $\det(A^T)=\det(A)$ by reindexing the Leibniz formula.” The reply follows the exercise’s language unless you request another.
 
-Claudian's matching reply is saved in the new AI tab while Bücher is open. If no session is active, send the prepared draft in Claudian. You can switch between attempts, edit them with the pencil, and review the selected attempt. Each tab is stored as a separate note under the book's `_solutions/` folder. Exercise completion is shared across tabs.
+With Claudian for Bücher, each request runs in the background and the reply is saved directly to its tab. The regular Claudian plugin still supports the chat handoff for generating solutions. AI solutions use MathJax, including existing proofs written with `\(…\)` or `\[…\]`. You can switch between attempts, edit them with the pencil, and review the selected attempt. Each tab is stored as a separate note under the book's `_solutions/` folder. Exercise completion is shared across tabs.
 
 ## Grading solutions
 
-The bar-chart button opens the grade for the selected solution. Click **Grade solution** to submit it to Claudian. The result shows each criterion, its score from 0 to 10, the reason, and comments next to the lines being discussed. Bücher calculates the weighted total. Changing the solution or the rubric prompts for a new grade.
+The bar-chart button opens the grade for the selected solution. Click **Grade solution** to start a separate request with [Claudian for Bücher](https://github.com/mateusdcc/claudian/releases/latest). The window shows progress and lets you cancel. Expand **Review details** for the model’s summary, with live updates when the provider offers them. The result shows each criterion, its score from 0 to 10, the reason, and comments next to the lines being discussed. Bücher calculates the weighted total. Changing the solution or the rubric prompts for a new grade.
 
 Configure criteria in the book’s `_index.md`:
 
@@ -67,6 +67,12 @@ Enable [Claudian](https://github.com/yishentu/claudian) in the same vault. Hover
 - **Review a proof.** The checklist button sends the exercise and the saved solution, including solutions stored in embedded notes. You can paste a different attempt in the dialog. The prompt asks Claudian to explain any gap and give a hint for correcting it.
 
 With an active Claudian session, **Send to Claudian** queues the prompt. For a new chat, the integration prepares a draft for you to send. The chat follows your Claudian provider settings. Tested with Claudian 2.3.38. [Claudian plugin API](https://github.com/yishentu/claudian/blob/main/docs/plugin-api.md)
+
+### Background tutoring and book memory
+
+Install [Claudian for Bücher](https://github.com/mateusdcc/claudian/releases/latest) in the same vault for inline grading and AI solutions. The fork shares the upstream plugin ID and reuses your configured providers. See the fork's release for installation steps.
+
+Bücher uses [MiniSearch](https://github.com/lucaong/minisearch) to search the book index, chapters, and learning blocks locally. The background task receives the exercise, a few relevant passages, declared prerequisites, and which retrieved material you have read. Saved solutions stay outside the memory index. A grading request includes the attempt you select. The [tutor](skills/buches-proof-tutor/SKILL.md) and [reviewer](skills/buches-proof-reviewer/SKILL.md) skills supply the task instructions. Other Obsidian plugins can call `app.plugins.getPlugin('buches').bookTools.search(bookPath, query)` or `.read(bookPath, ref)` for the same book-scoped lookup.
 
 [![Ask Claudian about a theorem](docs/media/claudian.png)](docs/media/claudian.png)
 

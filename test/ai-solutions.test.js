@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { AiSolutions } = require('../src/ai-solutions');
+const { AiSolutions, solutionPrompt } = require('../src/ai-solutions');
 const { solutionTabs, primarySolution } = require('../src/solution-notes');
 
 test('saving an AI reply requires the matching request and preserves an intervening edit', async () => {
@@ -31,4 +31,16 @@ test('alternate solution markers leave the original solution available', () => {
   const unit = { markdown: 'An original proof.\r\n<!-- buches-solution-tab: ai -->\r\n![[Buches/Book/_solutions/a.md]]\r\n' };
   assert.equal(primarySolution(unit), 'An original proof.');
   assert.deepEqual(solutionTabs(unit).map(({ kind, path }) => [kind, path]), [['ai', 'Buches/Book/_solutions/a.md']]);
+});
+
+test('AI requests default to a short proof and send the chosen scope with the requested method', () => {
+  const file = { path: 'Buches/Book/Exercise.md' };
+  const exercise = { title: 'Prove invariance under transposition' };
+  const concise = solutionPrompt(file, exercise, 'Exercise text', '');
+  assert.match(concise, /Writing style: Concise.*one to three compact paragraphs/);
+  assert.match(concise, /inline math as \$\.\.\.\$/);
+  assert.match(concise, /display math between \$\$/);
+  const firstStep = solutionPrompt(file, exercise, 'Exercise text', 'Reindex the Leibniz formula.', 'first-step');
+  assert.match(firstStep, /Writing style: First step only.*Stop before giving later steps/);
+  assert.match(firstStep, /My instructions: Reindex the Leibniz formula\./);
 });
