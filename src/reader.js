@@ -587,6 +587,8 @@ class BuchReader extends MarkdownView {
     const waiting = panel.createDiv({ cls: 'buches-solution-waiting', attr: { role: 'status' } });
     const rendered = panel.createDiv({ cls: 'buches-solution-body' });
     const edit = solutionButton(tools, 'pencil', 'Edit solution');
+    const patch = tab.kind === 'ai' && claudian(this.app)?.api?.runTask
+      ? solutionButton(tools, 'wand-sparkles', 'Patch AI solution') : null;
     const grade = solutionButton(tools, 'chart-no-axes-column', 'Grade this solution');
     let embed;
     let note = tab.path ? this.app.vault.getAbstractFileByPath(tab.path) : resolveEmbed(this.app, file, unit);
@@ -594,6 +596,7 @@ class BuchReader extends MarkdownView {
     let loaded = false;
     const ai = this.plugin.aiSolutions;
     const updateStatus = () => {
+      if (patch) patch.disabled = Boolean(note && ai.isPending(note));
       waiting.empty();
       const error = note && tab.kind === 'ai' && ai.errors.get(note);
       waiting.hidden = true;
@@ -657,6 +660,19 @@ class BuchReader extends MarkdownView {
       if (!await this.finishEmbedEdit(embed)) throw new Error('Save the current solution before switching.');
       updateEdit();
     };
+    patch?.addEventListener('click', async () => {
+      try {
+        await save();
+        const target = await getNote();
+        panel.closest('details').open = true;
+        new AiSolutionModal(this.app, async instructions => {
+          await preserveLegacyReview(this.app, target, model.book.index);
+          await ai.patch(target, file, exercise, instructions, model);
+        }, { patch: true }).open();
+      } catch (error) {
+        this.plugin.report(error, error.message || 'Could not open the patch.');
+      }
+    });
     grade.addEventListener('click', async () => {
       grade.disabled = true;
       try {
@@ -708,6 +724,7 @@ class BuchReader extends MarkdownView {
       load: () => ensureContent(),
       unmount: () => {
         edit.remove();
+        patch?.remove();
         grade.remove();
         state.component.removeChild(component);
       },

@@ -8,7 +8,7 @@ Turn a folder of Markdown notes into a book with ordered chapters, an exercise s
 
 ## Install
 
-1. Download `buches-0.4.4.zip` from the [GitHub release](https://github.com/mateusdcc/obsidian-buches/releases/latest).
+1. Download `buches-0.4.5.zip` from the [GitHub release](https://github.com/mateusdcc/obsidian-buches/releases/latest).
 2. Extract its `buches` folder into `<vault>/.obsidian/plugins/`. The folder should contain `main.js`, `manifest.json`, and `styles.css`.
 3. In Obsidian, enable **Bücher** under **Settings → Community plugins**. Click the library ribbon icon or run **Open Buches**.
 4. To try the sample, extract `demo-book.zip` into your vault, or copy the repository’s [demo/Buches](demo/Buches/) folder to the vault root. Keep your existing `Buches` folder if you already have one; copy only the sample book into it.
@@ -40,7 +40,7 @@ Under **Settings → Buches**, choose **Reader math** and the default **Solution
 
 Open **Reveal solution** and choose **+ Solution** to keep another attempt for the same exercise. **+ AI** appears when Claudian is enabled. Choose **Concise** (the default), **Step by step**, **Proof sketch**, or **First step only**. You can add a method or constraint, such as “Prove $\det(A^T)=\det(A)$ by reindexing the Leibniz formula.” The reply follows the exercise’s language unless you request another.
 
-With Claudian for Bücher, each request runs in the background and the reply is saved directly to its tab. The regular Claudian plugin still supports the chat handoff for generating solutions. AI solutions use MathJax, including existing proofs written with `\(…\)` or `\[…\]`. You can switch between attempts, edit them with the pencil, and review the selected attempt. Each tab is stored as a separate note under the book's `_solutions/` folder. Exercise completion is shared across tabs. Use **Compare solutions** beside **Maximize solutions** to open a second solution. Each panel has its own edit and grade buttons. When there are multiple solutions, use the × beside a tab to remove it from the exercise. The solution note remains in the vault.
+With Claudian for Bücher, each request runs in the background and the reply is saved directly to its tab. The regular Claudian plugin still supports the chat handoff for generating solutions. AI solutions use MathJax, including existing proofs written with `\(…\)` or `\[…\]`. You can switch between attempts, edit them with the pencil, and review the selected attempt. Each tab is stored as a separate note under the book's `_solutions/` folder. Exercise completion is shared across tabs. Use **Compare solutions** beside **Maximize solutions** to open a second solution. Each panel has its own edit and grade buttons. When there are multiple solutions, use the × beside a tab to remove it from the exercise. The solution note remains in the vault. On an AI solution, use the wand to request a patch. Describe what you want changed, such as adding a numerical example. Claudian revises the existing solution in the same tab.
 
 ## Grading solutions
 

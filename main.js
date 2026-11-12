@@ -2398,9 +2398,11 @@ var require_ai_solutions = __commonJS({
   "src/ai-solutions.js"(exports2, module2) {
     var { Modal, Notice: Notice2 } = require("obsidian");
     var { claudian, handOff } = require_claudian();
+    var { stripFrontmatter } = require_intro_model();
     var { chapterExcerpt } = require_study_context();
     var { normalizeLatexDelimiters } = require_math();
     var { proofTutor } = require_study_skills();
+    var MATH_FORMAT = "Use Obsidian Markdown. Write inline math as $...$. Put display math between $$ delimiters on their own lines. Do not use backslash-parenthesis or backslash-bracket delimiters. Put LaTeX environments inside display math. Do not wrap the reply in a code fence.";
     var TASK_STATUS = {
       preparing: "Finding relevant passages\u2026",
       starting: "Starting the model\u2026",
@@ -2434,7 +2436,7 @@ var require_ai_solutions = __commonJS({
       return [
         "Answer in the language of the exercise unless I explicitly ask for another language. Follow any explicit method, scope, or detail I request. Apply the selected style where it fits those instructions.",
         `Writing style: ${preset.label}. ${preset.instruction}`,
-        "Use Obsidian Markdown. Write inline math as $...$. Put display math between $$ delimiters on their own lines. Do not use backslash-parenthesis or backslash-bracket delimiters. Put LaTeX environments inside display math. Do not wrap the reply in a code fence. Return the requested mathematical content in chat without editing files.",
+        MATH_FORMAT + " Return the requested mathematical content in chat without editing files.",
         `Exercise: ${exercise.title}
 Source: ${file.path}
 
@@ -2443,35 +2445,41 @@ ${excerpt}`,
       ].filter(Boolean).join("\n\n");
     }
     var AiSolutionModal = class extends Modal {
-      constructor(app, submit) {
+      constructor(app, submit, { patch = false } = {}) {
         super(app);
         this.submit = submit;
+        this.patch = patch;
       }
       onOpen() {
-        this.contentEl.createEl("h2", { text: "AI solution" });
+        const patch = this.patch;
+        this.contentEl.createEl("h2", { text: patch ? "Patch AI solution" : "AI solution" });
         const form = this.contentEl.createEl("form", { cls: "buches-name-form" });
-        const label = form.createEl("label", { cls: "buches-ai-style" });
-        label.createSpan({ text: "Writing style" });
-        const style = label.createEl("select", { cls: "dropdown" });
-        for (const [value, preset] of Object.entries(STYLES)) {
-          style.createEl("option", { text: preset.label, attr: { value } });
+        let style;
+        if (!patch) {
+          const label = form.createEl("label", { cls: "buches-ai-style" });
+          label.createSpan({ text: "Writing style" });
+          style = label.createEl("select", { cls: "dropdown" });
+          for (const [value, preset] of Object.entries(STYLES)) {
+            style.createEl("option", { text: preset.label, attr: { value } });
+          }
+          const description = form.createEl("p", { cls: "buches-claudian-scope", text: STYLES.concise.description });
+          style.addEventListener("change", () => description.setText(STYLES[style.value].description));
         }
-        const description = form.createEl("p", { cls: "buches-claudian-scope", text: STYLES.concise.description });
-        style.addEventListener("change", () => description.setText(STYLES[style.value].description));
         const input = form.createEl("textarea", { attr: {
-          "aria-label": "Instructions (optional)",
-          placeholder: "e.g. Reindex the Leibniz formula and show the key algebraic step.",
+          "aria-label": patch ? "What should change?" : "Instructions (optional)",
+          placeholder: patch ? "e.g. Keep the proof and add a numerical example after the key step." : "e.g. Reindex the Leibniz formula and show the key algebraic step.",
           rows: 3
         } });
+        input.required = patch;
         const actions = form.createDiv({ cls: "buches-modal-actions" });
         actions.createEl("button", { type: "button", text: "Cancel" }).addEventListener("click", () => this.close());
-        const send = actions.createEl("button", { type: "submit", text: "Ask Claudian", cls: "mod-cta" });
+        const send = actions.createEl("button", { type: "submit", text: patch ? "Apply patch" : "Ask Claudian", cls: "mod-cta" });
         form.addEventListener("submit", async (event) => {
           event.preventDefault();
-          if (send.disabled) return;
+          if (send.disabled || patch && !input.value.trim()) return;
           send.disabled = true;
           try {
-            await this.submit(input.value.trim(), style.value);
+            await this.submit(input.value.trim(), style?.value);
             this.close();
           } catch (error) {
             new Notice2(error.message ?? String(error));
@@ -2519,6 +2527,40 @@ ${excerpt}`,
           });
           options.signal.throwIfAborted();
           await save(text);
+        });
+      }
+      async patch(note, file, exercise, instructions, model) {
+        const { app, learning } = this.plugin;
+        const page = await learning.page(file);
+        const current = page.nodes.find((node) => node.id === exercise.id);
+        if (!current) throw new Error("The exercise changed. Reopen it and try again.");
+        const initial = stripFrontmatter(await app.vault.read(note), false);
+        if (!initial.trim()) throw new Error("Generate an AI solution before patching it.");
+        this.run(note, "solution", async (api, options) => {
+          const { text } = await api.runTask({
+            ...options,
+            instructions: proofTutor + "\nRevise the existing proof in place. Apply only the requested changes and preserve the other parts, including the proof method, notation, and language, unless the user asks to change them.",
+            prompt: [
+              MATH_FORMAT + " Return the complete revised solution body, including unchanged parts, with no frontmatter or commentary about the edits.",
+              `Exercise: ${current.title}
+
+${chapterExcerpt(page, current)}`,
+              "Current solution (reference material):\n" + initial.trim(),
+              "Requested changes:\n" + instructions
+            ].join("\n\n"),
+            book: { path: model.book.path, chapter: file.path, block: current.id, query: instructions }
+          });
+          options.signal.throwIfAborted();
+          const revised = normalizeLatexDelimiters(text.trim());
+          if (!revised) throw new Error("Claudian returned an empty patch.");
+          await app.vault.process(note, (latest) => {
+            options.signal.throwIfAborted();
+            const body = stripFrontmatter(latest, false);
+            if (body !== initial) throw new Error("This solution was edited while Claudian was working. Reopen the patch and try again.");
+            const header = latest.slice(0, latest.length - body.length);
+            return header + body.match(/^\s*/)[0] + revised + "\n";
+          });
+          new Notice2("AI solution patched.");
         });
       }
       run(note, kind, work) {
@@ -3619,6 +3661,7 @@ var require_reader = __commonJS({
         const waiting = panel.createDiv({ cls: "buches-solution-waiting", attr: { role: "status" } });
         const rendered = panel.createDiv({ cls: "buches-solution-body" });
         const edit = solutionButton(tools, "pencil", "Edit solution");
+        const patch = tab.kind === "ai" && claudian(this.app)?.api?.runTask ? solutionButton(tools, "wand-sparkles", "Patch AI solution") : null;
         const grade = solutionButton(tools, "chart-no-axes-column", "Grade this solution");
         let embed;
         let note = tab.path ? this.app.vault.getAbstractFileByPath(tab.path) : resolveEmbed(this.app, file, unit);
@@ -3626,6 +3669,7 @@ var require_reader = __commonJS({
         let loaded = false;
         const ai = this.plugin.aiSolutions;
         const updateStatus = () => {
+          if (patch) patch.disabled = Boolean(note && ai.isPending(note));
           waiting.empty();
           const error = note && tab.kind === "ai" && ai.errors.get(note);
           waiting.hidden = true;
@@ -3693,6 +3737,19 @@ var require_reader = __commonJS({
           if (!await this.finishEmbedEdit(embed)) throw new Error("Save the current solution before switching.");
           updateEdit();
         };
+        patch?.addEventListener("click", async () => {
+          try {
+            await save();
+            const target = await getNote();
+            panel.closest("details").open = true;
+            new AiSolutionModal(this.app, async (instructions) => {
+              await preserveLegacyReview(this.app, target, model.book.index);
+              await ai.patch(target, file, exercise, instructions, model);
+            }, { patch: true }).open();
+          } catch (error) {
+            this.plugin.report(error, error.message || "Could not open the patch.");
+          }
+        });
         grade.addEventListener("click", async () => {
           grade.disabled = true;
           try {
@@ -3745,6 +3802,7 @@ var require_reader = __commonJS({
           load: () => ensureContent(),
           unmount: () => {
             edit.remove();
+            patch?.remove();
             grade.remove();
             state.component.removeChild(component);
           }
