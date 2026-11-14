@@ -2,6 +2,7 @@ const { Component, Modal, parseYaml, stringifyYaml } = require('obsidian');
 const { claudian } = require('./claudian');
 const { chapterExcerpt } = require('./study-context');
 const { proofReviewer } = require('./study-skills');
+const { engineForRenderer } = require('./solution-notes');
 
 const FRONTMATTER = /^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 
@@ -360,7 +361,7 @@ class GradeModal extends Modal {
     const metadata = await this.app.metadataCache.computeMetadataAsync?.(bytes);
     const starts = [...new Set([0, ...(metadata?.sections ?? []).map(section => section.position.start.line)])]
       .filter(line => line < lines.length).sort((a, b) => a - b);
-    const engine = renderer === 'latex' ? 'mathjax' : renderer === 'typst' ? 'typst' : this.state.solutionMath;
+    const engine = engineForRenderer(renderer, this.state.solutionMath);
     for (const [i, start] of starts.entries()) {
       const end = starts[i + 1] ?? lines.length;
       if (this.closed || !source.isConnected) return;

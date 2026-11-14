@@ -14,6 +14,7 @@ const { BookProgress, statusFor } = require('./progress');
 const { BuchSettings, readSettings } = require('./settings');
 const { AiSolutions } = require('./ai-solutions');
 const { createBookTools } = require('./book-memory');
+const { SolutionMathRouter } = require('./math');
 
 class BuchesPlugin extends Plugin {
   async onload() {
@@ -32,6 +33,7 @@ class BuchesPlugin extends Plugin {
     this.progress = new BookProgress(this.app, data?.solved ?? {});
     this.learning = new LearningIndex(this.app);
     this.solutionWrites = new Map();
+    this.mathRouter = new SolutionMathRouter(this.app);
     this.aiSolutions = new AiSolutions(this);
     this.bookTools = createBookTools(this);
     this.settingsSave = Promise.resolve();
@@ -111,6 +113,7 @@ class BuchesPlugin extends Plugin {
   }
   onunload() {
     this.alive = false;
+    this.mathRouter?.unload();
     this.aiSolutions.dispose();
     if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
     this.tabTitles.unload();

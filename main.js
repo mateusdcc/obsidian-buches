@@ -1643,14 +1643,132 @@ var require_math = __commonJS({
       });
       return { markdown, formulas };
     }
+    var ROUTER_TAG = Symbol("buchesTex2chtmlRouter");
     function typstMate(app) {
       return app.plugins?.plugins?.["typst-mate"];
     }
+    function directoryFor(path) {
+      const slash = path.lastIndexOf("/");
+      return slash < 0 ? "/" : `/${path.slice(0, slash + 1)}`;
+    }
+    function renderFormula(app, source, display, path, engine, doc, containerTag = "span") {
+      const mate = typstMate(app);
+      if (engine === "typst") {
+        const manager = mate?.typstManager;
+        if (!manager?.ready || typeof manager.render !== "function") throw new Error("Typst Mate is unavailable");
+        const el = doc.createElement(containerTag);
+        if (containerTag === "mjx-container") {
+          el.className = "Mathjax";
+          el.setAttribute("jax", "CHTML");
+        }
+        const rendered = manager.render(source, el, display ? "display" : "inline", directoryFor(path), path);
+        if (!rendered) throw new Error("Typst Mate did not return rendered math");
+        return rendered;
+      }
+      const native = mate?.originalTex2chtml;
+      return typeof native === "function" ? native(source, { display }) : renderMath(source, display);
+    }
+    var SolutionMathRouter2 = class {
+      constructor(app, getWin = () => typeof window !== "undefined" ? window : null) {
+        this.app = app;
+        this.getWin = getWin;
+        this.scopes = /* @__PURE__ */ new Set();
+        this.stack = [];
+        this.activeScope = null;
+        this.loading = /* @__PURE__ */ new Map();
+        this.delegate = null;
+        this.wrapper = (source, options) => this.renderTex2chtml(source, options);
+        this.wrapper[ROUTER_TAG] = true;
+      }
+      ensureInstalled() {
+        const mathJax = this.getWin()?.MathJax;
+        if (typeof mathJax?.tex2chtml !== "function" || mathJax.tex2chtml[ROUTER_TAG]) return;
+        this.delegate = mathJax.tex2chtml;
+        mathJax.tex2chtml = this.wrapper;
+      }
+      unload() {
+        const mathJax = this.getWin()?.MathJax;
+        if (mathJax?.tex2chtml === this.wrapper && this.delegate) mathJax.tex2chtml = this.delegate;
+        this.delegate = null;
+        this.scopes.clear();
+        this.stack = [];
+        this.activeScope = null;
+        this.loading.clear();
+      }
+      registerScope(scope) {
+        this.scopes.add(scope);
+        return () => {
+          this.scopes.delete(scope);
+          this.loading.delete(scope);
+          if (this.activeScope === scope) this.activeScope = null;
+        };
+      }
+      activate(scope) {
+        this.ensureInstalled();
+        this.activeScope = scope;
+      }
+      async withLoading(scope, fn) {
+        this.activate(scope);
+        this.loading.set(scope, (this.loading.get(scope) ?? 0) + 1);
+        try {
+          return await fn();
+        } finally {
+          const next = (this.loading.get(scope) ?? 1) - 1;
+          if (next > 0) this.loading.set(scope, next);
+          else this.loading.delete(scope);
+        }
+      }
+      withScope(scope, fn) {
+        this.activate(scope);
+        this.stack.push(scope);
+        try {
+          return fn();
+        } finally {
+          this.stack.pop();
+        }
+      }
+      resolveScope() {
+        if (this.stack.length) return this.stack[this.stack.length - 1];
+        const activeEl = this.getWin()?.document?.activeElement;
+        for (const scope of this.scopes) {
+          if (scope.host?.isConnected && scope.host.contains?.(activeEl)) return scope;
+        }
+        const candidate = this.activeScope;
+        if (!candidate?.host?.isConnected) return null;
+        if (!candidate.isEditing?.() && !this.loading.has(candidate)) return null;
+        if (activeEl) {
+          const leaf = activeEl.closest?.(".workspace-leaf-content");
+          const type = leaf?.dataset?.type;
+          if ((type === "markdown" || type === "buches-reader") && !leaf.contains?.(candidate.host)) return null;
+          const editor = activeEl.closest?.(".cm-editor");
+          if (editor && !candidate.host.contains?.(editor)) return null;
+        }
+        return candidate;
+      }
+      renderTex2chtml(source, options) {
+        const scope = this.resolveScope();
+        if (!scope) return this.delegate?.(source, options);
+        const display = Boolean(options?.display);
+        const engine = scope.getEngine();
+        const doc = scope.host?.ownerDocument ?? this.getWin()?.document;
+        try {
+          if (engine === "typst") {
+            const manager = typstMate(this.app)?.typstManager;
+            if (!manager?.ready || typeof manager.render !== "function") return this.delegate?.(source, options);
+            return renderFormula(this.app, source, display, scope.getPath(), "typst", doc, "mjx-container");
+          }
+          const native = typstMate(this.app)?.originalTex2chtml;
+          if (typeof native === "function") return native(source, { display });
+        } catch (error) {
+          console.error("Buches embed math:", error);
+        }
+        return this.delegate?.(source, options);
+      }
+    };
     async function renderMarkdown(app, source, target, path, component, engine) {
       const { markdown, formulas } = extractMath(source, engine === "mathjax");
       await MarkdownRenderer.render(app, markdown, target, path, component);
       if (!formulas.length) return;
-      const mate = typstMate(app);
       let mathJaxUsed = false;
       if (engine === "mathjax") await loadMathJax();
       for (const formula of formulas) {
@@ -1658,20 +1776,8 @@ var require_math = __commonJS({
         if (!slot) continue;
         slot.addClass(formula.display ? "buches-display-math" : "buches-inline-math");
         try {
-          if (engine === "typst") {
-            const manager = mate?.typstManager;
-            if (!manager?.ready || typeof manager.render !== "function") throw new Error("Typst Mate is unavailable");
-            const el = target.ownerDocument.createElement("span");
-            const directory = path.slice(0, path.lastIndexOf("/"));
-            const rendered = manager.render(formula.source, el, formula.display ? "display" : "inline", directory, path);
-            if (!rendered) throw new Error("Typst Mate did not return rendered math");
-            slot.append(rendered);
-          } else {
-            const native = mate?.originalTex2chtml;
-            const rendered = typeof native === "function" ? native(formula.source, { display: formula.display }) : renderMath(formula.source, formula.display);
-            slot.append(rendered);
-            mathJaxUsed = true;
-          }
+          slot.append(renderFormula(app, formula.source, formula.display, path, engine, target.ownerDocument));
+          if (engine !== "typst") mathJaxUsed = true;
         } catch (error) {
           slot.addClass("buches-math-unavailable");
           slot.setText(formula.literal);
@@ -1680,7 +1786,7 @@ var require_math = __commonJS({
       }
       if (mathJaxUsed) finishRenderMath?.();
     }
-    module2.exports = { renderMarkdown, typstMate, extractMath, normalizeLatexDelimiters };
+    module2.exports = { renderMarkdown, typstMate, extractMath, normalizeLatexDelimiters, renderFormula, SolutionMathRouter: SolutionMathRouter2 };
   }
 });
 
@@ -1935,11 +2041,30 @@ var require_learning = __commonJS({
 // src/solution-notes.js
 var require_solution_notes = __commonJS({
   "src/solution-notes.js"(exports2, module2) {
+    var { parseYaml } = require("obsidian");
     var { ensureFolder } = require_storage();
     var { ADDED_SOLUTION } = require_learning();
+    var { extractMath } = require_math();
     var EMBED = /^!\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]$/;
+    var FRONTMATTER = /^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
     var PRIMARY_AI = "<!-- buches-primary-ai -->";
     var TAB = /^<!-- buches-solution-tab: (manual|ai) -->\r?\n(!\[\[[^\r\n]+\]\])[ \t]*\r?$/gm;
+    function readRenderer(source) {
+      const header = source.match(FRONTMATTER);
+      if (!header) return null;
+      if (typeof parseYaml === "function") return parseYaml(header[1])?.renderer ?? null;
+      const line = header[1].match(/^renderer:[ \t]*([^\r\n#]+?)[ \t]*(?:#.*)?$/m);
+      return line ? line[1].replace(/^(['"])(.*)\1$/, "$2") : null;
+    }
+    function engineForRenderer(renderer, fallback = "mathjax") {
+      const value = typeof renderer === "string" ? renderer.trim().toLowerCase() : "";
+      if (value === "latex" || value === "mathjax" || value === "tex") return "mathjax";
+      if (value === "typst") return "typst";
+      return fallback;
+    }
+    function solutionEngine(source, kind, fallback = "mathjax") {
+      return engineForRenderer(readRenderer(source), kind === "ai" ? "mathjax" : fallback);
+    }
     function solutionTabs(unit) {
       return [...unit.markdown.matchAll(TAB)].flatMap((match) => {
         const path = match[2].match(EMBED)?.[1];
@@ -1996,8 +2121,10 @@ var require_solution_notes = __commonJS({
         }
         const folder = `${book.path}/_solutions`;
         await ensureFolder(vault, folder);
-        const renderer = kind === "ai" || (current.engine ?? engine) === "mathjax" ? "latex" : "typst";
         const body = kind ? "" : current.markdown.slice(0, solutionTabs(current)[0]?.offset ?? current.markdown.length);
+        const hasMath = Boolean(!kind && (extractMath(body, true).formulas.length || /\\begin\{/.test(body)));
+        const noteEngine = kind === "ai" ? "mathjax" : hasMath ? current.engine ?? engine : engine;
+        const renderer = noteEngine === "mathjax" ? "latex" : "typst";
         const content = `---
 renderer: ${renderer}
 ---
@@ -2074,7 +2201,7 @@ ${body}`;
     function appendSolutionTab(plugin, chapter, book, unit, kind, engine) {
       return writeSolution(plugin, chapter, book, unit, kind, engine);
     }
-    module2.exports = { isSolutionEmbed, resolveEmbed, materializeSolution, appendSolutionTab, solutionTabs, primarySolution, primaryKind, removeSolutionTab };
+    module2.exports = { isSolutionEmbed, resolveEmbed, materializeSolution, appendSolutionTab, solutionTabs, primarySolution, primaryKind, removeSolutionTab, readRenderer, engineForRenderer, solutionEngine };
   }
 });
 
@@ -2663,6 +2790,7 @@ var require_grading = __commonJS({
     var { claudian } = require_claudian();
     var { chapterExcerpt } = require_study_context();
     var { proofReviewer } = require_study_skills();
+    var { engineForRenderer } = require_solution_notes();
     var FRONTMATTER = /^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
     function rubricFor(frontmatter) {
       const rows = frontmatter?.grading;
@@ -3011,7 +3139,7 @@ var require_grading = __commonJS({
         const bytes = new TextEncoder().encode(proof).buffer;
         const metadata = await this.app.metadataCache.computeMetadataAsync?.(bytes);
         const starts = [.../* @__PURE__ */ new Set([0, ...(metadata?.sections ?? []).map((section) => section.position.start.line)])].filter((line) => line < lines.length).sort((a, b) => a - b);
-        const engine = renderer === "latex" ? "mathjax" : renderer === "typst" ? "typst" : this.state.solutionMath;
+        const engine = engineForRenderer(renderer, this.state.solutionMath);
         for (const [i, start] of starts.entries()) {
           const end = starts[i + 1] ?? lines.length;
           if (this.closed || !source.isConnected) return;
@@ -3049,7 +3177,7 @@ var require_reader = __commonJS({
     var { countsFor, statusFor: statusFor2 } = require_progress();
     var { renderDashboard, renderBookProgress, renderDependencies, chapterLink, progressButton } = require_dashboard();
     var { renderMarkdown } = require_math();
-    var { materializeSolution, appendSolutionTab, solutionTabs, primaryKind, removeSolutionTab, resolveEmbed } = require_solution_notes();
+    var { materializeSolution, appendSolutionTab, solutionTabs, primaryKind, removeSolutionTab, resolveEmbed, solutionEngine, readRenderer } = require_solution_notes();
     var { claudian, studyActions } = require_claudian();
     var { AiSolutionModal } = require_ai_solutions();
     var { GradeModal, preserveLegacyReview } = require_grading();
@@ -3071,6 +3199,7 @@ var require_reader = __commonJS({
         this.plugin = plugin;
         this.sheet = false;
         this.embeds = /* @__PURE__ */ new Set();
+        this.embedScopes = /* @__PURE__ */ new WeakMap();
         this.selectedSolutions = /* @__PURE__ */ new Map();
         this.comparisonSolutions = /* @__PURE__ */ new Map();
         this.maximizedSolutions = /* @__PURE__ */ new Set();
@@ -3148,7 +3277,7 @@ var require_reader = __commonJS({
         }
         if (this.sheet) return;
         await this.flushEmbeds();
-        for (const embed of this.embeds) if (embed.editor) embed.showPreview();
+        for (const embed of this.embeds) if (embed.editor) this.showEmbedPreview(embed);
         await this.setMode(this.editMode);
         this.editingChapter = true;
         this.contentEl.addClass("buches-editing-chapter");
@@ -3667,6 +3796,8 @@ var require_reader = __commonJS({
         let note = tab.path ? this.app.vault.getAbstractFileByPath(tab.path) : resolveEmbed(this.app, file, unit);
         let pending;
         let loaded = false;
+        const router = this.plugin.mathRouter;
+        let currentEngine = tab.kind === "ai" ? "mathjax" : state.solutionMath;
         const ai = this.plugin.aiSolutions;
         const updateStatus = () => {
           if (patch) patch.disabled = Boolean(note && ai.isPending(note));
@@ -3700,8 +3831,10 @@ var require_reader = __commonJS({
               const source = await this.app.vault.read(note);
               if (!rendered.isConnected) return;
               rendered.empty();
-              if (!native && (tab.kind === "ai" || /^---\r?\nrenderer: latex\r?\n/.test(source))) {
-                await this.render(stripFrontmatter(source), rendered, { ...state, component, file: note }, "mathjax");
+              const engine = solutionEngine(source, tab.kind, state.solutionMath);
+              currentEngine = engine;
+              if (!native) {
+                await this.render(stripFrontmatter(source), rendered, { ...state, component, file: note }, engine);
               } else {
                 const create = this.app.embedRegistry?.getEmbedCreator(note);
                 if (create) {
@@ -3711,8 +3844,28 @@ var require_reader = __commonJS({
                   component.addChild(embed);
                   this.embeds.add(embed);
                   component.register(() => this.embeds.delete(embed));
-                  await embed.loadFile();
-                } else await this.render(`![[${note.path}]]`, rendered, { ...state, component });
+                  const scope = {
+                    host,
+                    getPath: () => note.path,
+                    getEngine: () => {
+                      const draft = embed?.editor?.getValue?.();
+                      const fallback = this.plugin.settings?.solutionMath ?? state.solutionMath;
+                      if (typeof draft === "string" && readRenderer(draft) !== null) {
+                        return solutionEngine(draft, tab.kind, fallback);
+                      }
+                      return currentEngine;
+                    },
+                    isEditing: () => Boolean(embed?.editor)
+                  };
+                  this.embedScopes.set(embed, scope);
+                  if (router) {
+                    component.register(router.registerScope(scope));
+                    host.addEventListener("focusin", () => router.activate(scope));
+                    await router.withLoading(scope, () => embed.loadFile());
+                  } else {
+                    await embed.loadFile();
+                  }
+                } else await this.render(`![[${note.path}]]`, rendered, { ...state, component }, engine);
               }
               loaded = true;
             } catch (error) {
@@ -3778,7 +3931,9 @@ var require_reader = __commonJS({
               await this.refresh();
             } else {
               await preserveLegacyReview(this.app, note, model.book.index);
-              embed.showEditor();
+              const scope = this.embedScopes.get(embed);
+              if (router && scope) router.withScope(scope, () => embed.showEditor());
+              else embed.showEditor();
             }
             updateEdit();
           } catch (error) {
@@ -3788,7 +3943,13 @@ var require_reader = __commonJS({
           }
         });
         component.registerEvent(this.app.vault.on("modify", async (changed) => {
-          if (changed !== note || !loaded || embed) return;
+          if (changed !== note || !loaded) return;
+          if (embed) {
+            const readNote = this.app.vault.cachedRead ?? this.app.vault.read;
+            const updated = await readNote.call(this.app.vault, note);
+            currentEngine = solutionEngine(updated, tab.kind, this.plugin.settings?.solutionMath ?? state.solutionMath);
+            return;
+          }
           if (pending) await pending;
           if (!rendered.isConnected || embed) return;
           loaded = false;
@@ -3808,10 +3969,15 @@ var require_reader = __commonJS({
           }
         };
       }
+      showEmbedPreview(embed) {
+        const scope = this.embedScopes.get(embed);
+        if (this.plugin.mathRouter && scope) this.plugin.mathRouter.withScope(scope, () => embed.showPreview());
+        else embed.showPreview();
+      }
       async finishEmbedEdit(embed) {
         try {
           await this.flushEmbeds();
-          embed.showPreview();
+          this.showEmbedPreview(embed);
           this.plugin.scheduleRefresh();
           return true;
         } catch (error) {
@@ -5940,6 +6106,7 @@ var { BookProgress, statusFor } = require_progress();
 var { BuchSettings, readSettings } = require_settings();
 var { AiSolutions } = require_ai_solutions();
 var { createBookTools } = require_book_memory();
+var { SolutionMathRouter } = require_math();
 var BuchesPlugin = class extends Plugin {
   async onload() {
     await ensureRoot(this.app.vault);
@@ -5957,6 +6124,7 @@ var BuchesPlugin = class extends Plugin {
     this.progress = new BookProgress(this.app, data?.solved ?? {});
     this.learning = new LearningIndex(this.app);
     this.solutionWrites = /* @__PURE__ */ new Map();
+    this.mathRouter = new SolutionMathRouter(this.app);
     this.aiSolutions = new AiSolutions(this);
     this.bookTools = createBookTools(this);
     this.settingsSave = Promise.resolve();
@@ -6040,6 +6208,7 @@ var BuchesPlugin = class extends Plugin {
   }
   onunload() {
     this.alive = false;
+    this.mathRouter?.unload();
     this.aiSolutions.dispose();
     if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
     this.tabTitles.unload();

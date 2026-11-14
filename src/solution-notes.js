@@ -1,9 +1,31 @@
+const { parseYaml } = require('obsidian');
 const { ensureFolder } = require('./storage');
 const { ADDED_SOLUTION } = require('./learning');
+const { extractMath } = require('./math');
 
 const EMBED = /^!\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]$/;
+const FRONTMATTER = /^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 const PRIMARY_AI = '<!-- buches-primary-ai -->';
 const TAB = /^<!-- buches-solution-tab: (manual|ai) -->\r?\n(!\[\[[^\r\n]+\]\])[ \t]*\r?$/gm;
+
+function readRenderer(source) {
+  const header = source.match(FRONTMATTER);
+  if (!header) return null;
+  if (typeof parseYaml === 'function') return parseYaml(header[1])?.renderer ?? null;
+  const line = header[1].match(/^renderer:[ \t]*([^\r\n#]+?)[ \t]*(?:#.*)?$/m);
+  return line ? line[1].replace(/^(['"])(.*)\1$/, '$2') : null;
+}
+
+function engineForRenderer(renderer, fallback = 'mathjax') {
+  const value = typeof renderer === 'string' ? renderer.trim().toLowerCase() : '';
+  if (value === 'latex' || value === 'mathjax' || value === 'tex') return 'mathjax';
+  if (value === 'typst') return 'typst';
+  return fallback;
+}
+
+function solutionEngine(source, kind, fallback = 'mathjax') {
+  return engineForRenderer(readRenderer(source), kind === 'ai' ? 'mathjax' : fallback);
+}
 
 function solutionTabs(unit) {
   return [...unit.markdown.matchAll(TAB)].flatMap(match => {
@@ -67,8 +89,14 @@ function writeSolution(plugin, chapter, book, unit, kind, engine) {
     }
     const folder = `${book.path}/_solutions`;
     await ensureFolder(vault, folder);
-    const renderer = kind === 'ai' || (current.engine ?? engine) === 'mathjax' ? 'latex' : 'typst';
     const body = kind ? '' : current.markdown.slice(0, solutionTabs(current)[0]?.offset ?? current.markdown.length);
+    const hasMath = Boolean(!kind && (extractMath(body, true).formulas.length || /\\begin\{/.test(body)));
+    const noteEngine = kind === 'ai'
+      ? 'mathjax'
+      : hasMath
+        ? (current.engine ?? engine)
+        : engine;
+    const renderer = noteEngine === 'mathjax' ? 'latex' : 'typst';
     const content = `---\nrenderer: ${renderer}\n---\n\n${body}`;
     const note = await vault.create(`${folder}/${crypto.randomUUID()}.md`, content);
     try {
@@ -141,4 +169,4 @@ function appendSolutionTab(plugin, chapter, book, unit, kind, engine) {
   return writeSolution(plugin, chapter, book, unit, kind, engine);
 }
 
-module.exports = { isSolutionEmbed, resolveEmbed, materializeSolution, appendSolutionTab, solutionTabs, primarySolution, primaryKind, removeSolutionTab };
+module.exports = { isSolutionEmbed, resolveEmbed, materializeSolution, appendSolutionTab, solutionTabs, primarySolution, primaryKind, removeSolutionTab, readRenderer, engineForRenderer, solutionEngine };

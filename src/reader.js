@@ -7,7 +7,7 @@ const { iconFor, renderFileIcon } = require('./icons');
 const { countsFor, statusFor } = require('./progress');
 const { renderDashboard, renderBookProgress, renderDependencies, chapterLink, progressButton } = require('./dashboard');
 const { renderMarkdown } = require('./math');
-const { materializeSolution, appendSolutionTab, solutionTabs, primaryKind, removeSolutionTab, resolveEmbed } = require('./solution-notes');
+const { materializeSolution, appendSolutionTab, solutionTabs, primaryKind, removeSolutionTab, resolveEmbed, solutionEngine, readRenderer } = require('./solution-notes');
 const { claudian, studyActions } = require('./claudian');
 const { AiSolutionModal } = require('./ai-solutions');
 const { GradeModal, preserveLegacyReview } = require('./grading');
@@ -33,6 +33,7 @@ class BuchReader extends MarkdownView {
     this.plugin = plugin;
     this.sheet = false;
     this.embeds = new Set();
+    this.embedScopes = new WeakMap();
     this.selectedSolutions = new Map();
     this.comparisonSolutions = new Map();
     this.maximizedSolutions = new Set();
@@ -107,7 +108,7 @@ class BuchReader extends MarkdownView {
     }
     if (this.sheet) return;
     await this.flushEmbeds();
-    for (const embed of this.embeds) if (embed.editor) embed.showPreview();
+    for (const embed of this.embeds) if (embed.editor) this.showEmbedPreview(embed);
     await this.setMode(this.editMode);
     this.editingChapter = true;
     this.contentEl.addClass('buches-editing-chapter');
@@ -594,6 +595,8 @@ class BuchReader extends MarkdownView {
     let note = tab.path ? this.app.vault.getAbstractFileByPath(tab.path) : resolveEmbed(this.app, file, unit);
     let pending;
     let loaded = false;
+    const router = this.plugin.mathRouter;
+    let currentEngine = tab.kind === 'ai' ? 'mathjax' : state.solutionMath;
     const ai = this.plugin.aiSolutions;
     const updateStatus = () => {
       if (patch) patch.disabled = Boolean(note && ai.isPending(note));
@@ -628,8 +631,10 @@ class BuchReader extends MarkdownView {
           const source = await this.app.vault.read(note);
           if (!rendered.isConnected) return;
           rendered.empty();
-          if (!native && (tab.kind === 'ai' || /^---\r?\nrenderer: latex\r?\n/.test(source))) {
-            await this.render(stripFrontmatter(source), rendered, { ...state, component, file: note }, 'mathjax');
+          const engine = solutionEngine(source, tab.kind, state.solutionMath);
+          currentEngine = engine;
+          if (!native) {
+            await this.render(stripFrontmatter(source), rendered, { ...state, component, file: note }, engine);
           } else {
             const create = this.app.embedRegistry?.getEmbedCreator(note);
             if (create) {
@@ -639,8 +644,28 @@ class BuchReader extends MarkdownView {
               component.addChild(embed);
               this.embeds.add(embed);
               component.register(() => this.embeds.delete(embed));
-              await embed.loadFile();
-            } else await this.render(`![[${note.path}]]`, rendered, { ...state, component });
+              const scope = {
+                host,
+                getPath: () => note.path,
+                getEngine: () => {
+                  const draft = embed?.editor?.getValue?.();
+                  const fallback = this.plugin.settings?.solutionMath ?? state.solutionMath;
+                  if (typeof draft === 'string' && readRenderer(draft) !== null) {
+                    return solutionEngine(draft, tab.kind, fallback);
+                  }
+                  return currentEngine;
+                },
+                isEditing: () => Boolean(embed?.editor),
+              };
+              this.embedScopes.set(embed, scope);
+              if (router) {
+                component.register(router.registerScope(scope));
+                host.addEventListener('focusin', () => router.activate(scope));
+                await router.withLoading(scope, () => embed.loadFile());
+              } else {
+                await embed.loadFile();
+              }
+            } else await this.render(`![[${note.path}]]`, rendered, { ...state, component }, engine);
           }
           loaded = true;
         } catch (error) {
@@ -701,7 +726,9 @@ class BuchReader extends MarkdownView {
           await this.refresh();
         } else {
           await preserveLegacyReview(this.app, note, model.book.index);
-          embed.showEditor();
+          const scope = this.embedScopes.get(embed);
+          if (router && scope) router.withScope(scope, () => embed.showEditor());
+          else embed.showEditor();
         }
         updateEdit();
       } catch (error) {
@@ -710,9 +737,15 @@ class BuchReader extends MarkdownView {
         edit.disabled = false;
       }
     });
-    // A rendered AI or LaTeX preview can update while the other panel has an open editor.
+    // A rendered solution preview can update while the other panel has an open editor.
     component.registerEvent(this.app.vault.on('modify', async changed => {
-      if (changed !== note || !loaded || embed) return;
+      if (changed !== note || !loaded) return;
+      if (embed) {
+        const readNote = this.app.vault.cachedRead ?? this.app.vault.read;
+        const updated = await readNote.call(this.app.vault, note);
+        currentEngine = solutionEngine(updated, tab.kind, this.plugin.settings?.solutionMath ?? state.solutionMath);
+        return;
+      }
       if (pending) await pending;
       if (!rendered.isConnected || embed) return;
       loaded = false;
@@ -731,10 +764,16 @@ class BuchReader extends MarkdownView {
     };
   }
 
+  showEmbedPreview(embed) {
+    const scope = this.embedScopes.get(embed);
+    if (this.plugin.mathRouter && scope) this.plugin.mathRouter.withScope(scope, () => embed.showPreview());
+    else embed.showPreview();
+  }
+
   async finishEmbedEdit(embed) {
     try {
       await this.flushEmbeds();
-      embed.showPreview();
+      this.showEmbedPreview(embed);
       this.plugin.scheduleRefresh();
       return true;
     } catch (error) {
